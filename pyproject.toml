@@ -7,7 +7,7 @@ requires-python = ">=3.09"
 dynamic = ["version"]
 dependencies = [
     "xarray"
-]
+] 
 
 [project.optional-dependencies]
 test = [
