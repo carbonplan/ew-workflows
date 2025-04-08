@@ -1,0 +1,4 @@
+yr_start,duration,dustsp,dustrate,dustrad
+0,3,cc,0,defer
+3,4,cc,defer,defer
+4,14,cc,0,defer

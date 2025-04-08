@@ -1,0 +1,4 @@
+varname,filename,dataset_loc,colname_var,colname_time
+TS_C,T_temp.in,atm,T(C),time(yr)
+QRUNOFF_mmmonth,q_temp.in,lnd,runoff(mm/month),time(yr)
+H2OSOI_mmmonth,Wet_temp.in,lnd,moisture(mm/m),time(yr)

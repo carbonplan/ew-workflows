@@ -1,0 +1,4 @@
+yr_start,duration,dustsp,dustrate,dustrad
+0,3,gbas,0,defer
+3,4,gbas,defer,defer
+4,14,gbas,0,defer
