@@ -1,0 +1,52 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Workflow
+metadata:
+  generateName: scepter-run- # use name: specter-spinup to have the same pod name for all runs rather than a unique name
+  namespace: dev  # replace with your deployment namespace if needed
+  labels:
+    workflows.argoproj.io/creator-preferred-username: 'tykukla'
+    jupyterflow-override: 'true' # this sets the workflow to have access to the shared file system and conda environments
+spec:
+  entrypoint: scepter-run # sets which template the workflow starts on
+  arguments:
+    parameters: # allows passing parameters to the workflow via the cli
+    - name: batch-input-dir # location of batch csv files (ignored by spinup runs)
+      value: /home/tykukla/aglime-swap-cdr/inputs/scepter/batch
+    - name: batch-input # which set of inputs to use (ignored by spinup runs)
+      value: test.csv
+    - name: batch-index # sets the row of the batch-input to use in run (ignored by spinup runs)
+      value: 1
+    - name: control-script-dir # location of control scripts
+      value: /home/tykukla/aglime-swap-cdr/scripts/scepter/run/control_scripts
+    - name: control-script # so that you can run multiple spinups using the same template
+      value: spinup_4var_s311.sh # default value
+    - name: default-dict  # dictionary for defaults (over-written by batch-inputs)
+      value: default_dictionary
+    - name: model-dir # so that multiple people can run the model using the same template
+      value: /home/tykukla/SCEPTER/ # default value
+    - name: conda-env # specify the conda environment for the model run
+      value: cdr-scepter1p0_env
+  templates:
+  - name: scepter-run
+    nodeSelector:
+      dedicated: workflow
+    inputs:
+      parameters: # specifies which parameters are used by this template
+      - name: batch-input-dir
+      - name: batch-input
+      - name: batch-index
+      - name: control-script-dir
+      - name: control-script
+      - name: default-dict
+      - name: model-dir
+      - name: conda-env
+    script:
+      image: quay.io/carbonplan/nebari-argo:latest # this doesn't actually matter, because it is overridden based on where the workflow is submitted
+      command: [bash]
+      # source: |
+      #   conda run -n {{inputs.parameters.conda-env}} --cwd {{inputs.parameters.model-dir}} bash {{inputs.parameters.control-script}}
+      source: |
+        conda run -n {{inputs.parameters.conda-env}} --cwd {{inputs.parameters.control-script-dir}} python3 {{inputs.parameters.control-script}} {{inputs.parameters.model-dir}} {{inputs.parameters.batch-input-dir}} {{inputs.parameters.batch-input}} {{inputs.parameters.batch-index}} {{inputs.parameters.default-dict}}
+  ttlStrategy:
+    secondsAfterSuccess: 600    # "time-to-live: i.e., how long before the workflow gets deleted. Note the logs are still archived by Loki and viewable after deletion."
+    secondsAfterFailure: 600
