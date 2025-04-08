@@ -26,7 +26,7 @@ requires = [
     "check-manifest"
 ]
 
-[tool.setuptools_scm]
+[tool.setuptools_scm] 
 fallback_version = "9999"
 
 [tool.setuptools.packages.find]
