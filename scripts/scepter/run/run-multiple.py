@@ -13,7 +13,13 @@
 # and, if it's not, change it (os.chdir("/path/to/file/dir"))
 # 
 # %% 
+import os
+import sys 
+
+# --- read in argo helper functions  
+sys.path.append(os.path.abspath('/home/tykukla/ew-workflows/run_scepter'))
 import argo_helper_fxns as ahf
+# ---
 
 
 # %% 
@@ -30,8 +36,8 @@ ahf.retry_failed_runs(
     rerun_delay = 5,
     parameter_yaml = run_pars,
     multiyear = multiyear,
-    maindir = "/home/tykukla/aglime-swap-cdr",
-    parameter_yaml_dir = "inputs/scepter/params",
+    maindir = "/home/tykukla/ew-workflows",
+    parameter_yaml_subdir = "inputs/scepter/params",
     completed_fn = "completed.res",
     check_results_fn  = "check_results.res",
     check_logs_fn  = "check_logs.res",

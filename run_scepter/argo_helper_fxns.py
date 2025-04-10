@@ -31,7 +31,7 @@ import yaml
 def run_multiple(
     parameter_yaml: str,
     parameter_yaml_subdir: str="inputs/scepter/params",
-    maindir: str="/home/tykukla/aglime-swap-cdr",
+    maindir: str="/home/tykukla/ew-workflows",
     workflow_name: str="scepter-pyworkflow.yaml",
     bleed_delay: int=15,
     echo_command: bool=True,
@@ -530,7 +530,7 @@ def retry_failed_runs(
     rerun_delay: float,
     parameter_yaml: str,
     multiyear: bool,
-    maindir: str="/home/tykukla/aglime-swap-cdr",
+    maindir: str="/home/tykukla/ew-workflows",
     parameter_yaml_subdir: str="inputs/scepter/params",
     completed_fn: str = "completed.res",
     check_results_fn: str  = "check_results.res",
@@ -599,7 +599,7 @@ def retry_failed_runs(
 
     # --- read in the parameter file
     # create parameter file path
-    parameterfile = os.path.join(parameter_yaml_subdir, parameter_yaml)
+    parameterfile = os.path.join(maindir, parameter_yaml_subdir, parameter_yaml)
     # check system arguments, or set default
     with open(parameterfile, "r") as file:
         pars = yaml.safe_load(file)
@@ -673,7 +673,7 @@ def retry_failed_runs(
 
             # *****************************
             # apply the rerun delay
-            time.sleep(rerun_delay * 60)    # convert minutes to seconds
+            time.sleep(rerun_delay * 60)    # convert seconds to minutes
             # *****************************
             
             # check if the reruns worked 

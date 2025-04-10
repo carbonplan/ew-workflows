@@ -9,25 +9,32 @@
 # T Kukla (CarbonPlan, 2024)
 # 
 # ---------------------------------------------------
+
+import itertools
 import os
+import sys
+
 import numpy as np
 import pandas as pd
-import itertools
+
+# --- read in batch helper functions  
+sys.path.append(os.path.abspath('/home/tykukla/ew-workflows/run_scepter'))
 import batch_helperFxns as bhf
+# ---
 
 # %% 
 # --- USER INPUTS
 # [1] vars to update, constant for all runs
-fertLevel = "low"    # name for how much fertilizer is applied
+fertLevel = "hi"    # name for how much fertilizer is applied
 dustsp = "gbas"      # name for dust species to apply (must be from accepted list)
-extra_tag = "basev14"  # another distinguishing tag
+extra_tag = "test_v0"  # another distinguishing tag
 pref = f"{fertLevel}Fert_{dustsp}_{extra_tag}"
 clim_tag = None   # [string] year-span (e.g., 1950-2020) for clim input if climate files are used
                   # (if clim files are not used, set to None)
 # save vars
 file_prefix = f"meanAnn_{dustsp}_shortRun_{extra_tag}_{fertLevel}Fert_gs+apprate"  # prefix of output run names
 fn = file_prefix + "_v0.csv"
-savepath_batch = "/home/tykukla/aglime-swap-cdr/scepter/batch-inputs"
+savepath_batch = "/home/tykukla/ew-workflows/inputs/scepter/batch"
 multi_run_split = False   # whether to split the csv into multiple files
 max_iters_per_set = 20    # [int] the number of runs per csv (only used if multi_run_split is True)
 
@@ -35,11 +42,11 @@ const_dict = {
     "duration": 15,  # duration of run (starts from earliest year)
     "dustsp": dustsp,
     "dustsp_2nd": "amnt",
-    "dustrate_2nd": 6.0, # 6.0, # 30., # 0.0, 
+    "dustrate_2nd": 30.0, # 6.0, # 30., # 0.0, 
     "add_secondary": False,
     "imix": 3, # 1,
     "singlerun_seasonality": False,
-    "include_psd_full": True,   # False,
+    "include_psd_full": False,   # False,
     "include_psd_bulk": False,
     'poro_iter_field': False,      # [default='false'] porosity iteration
     'poro_evol': False,            # [default='false'] porosity evolves with solid phase dissolution
