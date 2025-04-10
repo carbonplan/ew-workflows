@@ -13,7 +13,13 @@
 # and, if it's not, change it (os.chdir("/path/to/file/dir"))
 # 
 # %% 
+import os
+import sys 
+
+# --- read in argo helper functions  
+sys.path.append(os.path.abspath('/home/tykukla/ew-workflows/run_scepter'))
 import argo_helper_fxns as ahf
+# ---
 
 
 # %% 

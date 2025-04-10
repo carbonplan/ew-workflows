@@ -10,11 +10,17 @@
 # T Kukla (CarbonPlan, 2024)
 # 
 # ---------------------------------------------------
+import itertools
 import os
+import sys
+
 import numpy as np
 import pandas as pd
-import itertools
+
+# --- read in batch helper functions  
+sys.path.append(os.path.abspath('/home/tykukla/ew-workflows/run_scepter'))
 import batch_helperFxns as bhf
+# ---
 
 # %% 
 # --- USER INPUTS

@@ -30,7 +30,8 @@ import yaml
 # %% 
 def run_multiple(
     parameter_yaml: str,
-    parameter_yaml_dir: str="parameters",
+    parameter_yaml_subdir: str="inputs/scepter/params",
+    maindir: str="/home/tykukla/ew-workflows",
     workflow_name: str="scepter-pyworkflow.yaml",
     bleed_delay: int=15,
     echo_command: bool=True,
@@ -47,8 +48,10 @@ def run_multiple(
     parameter_yaml : str
         name of the parameter file for this batch. Something like
         "batch_pars.yaml". 
-    parameter_yaml_dir : str
+    parameter_yaml_subdir : str
         location of the parameter_yaml file
+    maindir : str
+        location of the inputs directory (usually '/my/path/to/aglime-swap-cdr')
     workflow_name : str
         name of the argo workflow .yaml file 
     bleed_delay : int
@@ -78,7 +81,7 @@ def run_multiple(
 
     # --- read in the parameter file
     # create parameter file path
-    parameterfile = os.path.join(parameter_yaml_dir, parameter_yaml)
+    parameterfile = os.path.join(maindir, parameter_yaml_subdir, parameter_yaml)
     # check system arguments, or set default
     with open(parameterfile, "r") as file:
         pars = yaml.safe_load(file)
@@ -112,7 +115,8 @@ def run_multiple(
 
 # (check when last file was updated to decide if model stopped running)
 def is_last_update_older_than(
-    dir_path: str, minutes: int = 20
+    dir_path: str, 
+    minutes: int = 20
     ) -> bool:
     """
     Returns True if the most recent update in dir_path is older than `minutes` minutes.
@@ -417,15 +421,6 @@ def allrows_rerun_check(
         Pandas dataframe of the batch*.csv file. 
     pars : dict
         dictionary of the parameters in the parameter yaml file
-    parameter_yaml : str
-        name of the parameter file for this batch. Something like
-        "batch_pars.yaml". 
-    multiyear : bool
-        True means it's a multiyear simulation (e.g., multiple iters stitched
-        into a composite), necessary to know for crafting the full run IDs. 
-        False means it's a standard simulation, not a composite.
-    parameter_yaml_dir : str
-        location of the parameter_yaml file
     completed_fn : str
         name of the completed.res file 
     check_results_fn : str
@@ -535,7 +530,8 @@ def retry_failed_runs(
     rerun_delay: float,
     parameter_yaml: str,
     multiyear: bool,
-    parameter_yaml_dir: str="parameters",
+    maindir: str="/home/tykukla/ew-workflows",
+    parameter_yaml_subdir: str="inputs/scepter/params",
     completed_fn: str = "completed.res",
     check_results_fn: str  = "check_results.res",
     check_logs_fn: str  = "check_logs.res",
@@ -566,7 +562,9 @@ def retry_failed_runs(
         True means it's a multiyear simulation (e.g., multiple iters stitched
         into a composite), necessary to know for crafting the full run IDs. 
         False means it's a standard simulation, not a composite.
-    parameter_yaml_dir : str
+    maindir : str
+        location of the inputs directory (usually '/my/path/to/aglime-swap-cdr')
+    parameter_yaml_subdir : str
         location of the parameter_yaml file
     completed_fn : str
         name of the completed.res file 
@@ -601,7 +599,7 @@ def retry_failed_runs(
 
     # --- read in the parameter file
     # create parameter file path
-    parameterfile = os.path.join(parameter_yaml_dir, parameter_yaml)
+    parameterfile = os.path.join(maindir, parameter_yaml_subdir, parameter_yaml)
     # check system arguments, or set default
     with open(parameterfile, "r") as file:
         pars = yaml.safe_load(file)
@@ -663,7 +661,8 @@ def retry_failed_runs(
             # re-run each case 
             run_multiple(
                 parameter_yaml = parameter_yaml,
-                parameter_yaml_dir = parameter_yaml_dir,
+                parameter_yaml_subdir = parameter_yaml_subdir,
+                maindir = maindir, 
                 workflow_name = workflow_name_runmultiple,
                 bleed_delay = bleed_delay_runmultiple,
                 echo_command = True,
@@ -674,7 +673,7 @@ def retry_failed_runs(
 
             # *****************************
             # apply the rerun delay
-            time.sleep(rerun_delay * 60)    # convert minutes to seconds
+            time.sleep(rerun_delay * 60)    # convert seconds to minutes
             # *****************************
             
             # check if the reruns worked 
