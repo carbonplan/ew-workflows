@@ -1,6 +1,6 @@
 
 [project]
-name = "aglime-swap-cdr"
+name = "run_scepter"
 readme = "README.md"
 
 requires-python = ">=3.09"
@@ -37,7 +37,7 @@ datatree = ["py.typed"]
 
 [tool.mypy]
 show_error_codes = true
-files = "scepter/*"
+files = "run_scepter/*"
 
 
 
@@ -49,8 +49,8 @@ target-version = "py39"
 
 exclude = [
     "docs",
-    "scepter/batch-inputs/*.csv",
-    "scepter/process/scratch",
+    "inputs/scepter/batch/*.csv",
+    "scripts/scepter/process/scratch",
     "*.csv",
     "**/*.csv",
     ".eggs"]

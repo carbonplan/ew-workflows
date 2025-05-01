@@ -61,3 +61,12 @@ Note: we had the most success with argo if we imposed a delay (`bleed_delay` in 
 ---
 
 # Postprocessing
+
+## Comparing two batch runs
+1. Open `ew-workflows/scripts/scepter/process/cdr_feedstock_compare-apprate+psize.ipynb`. 
+
+2. Update `sys.path.append` to your `ew-workflows/run_scepter` path. 
+
+3. Update `dur`, `fertLevel`, `dustsp`, `sitename`, `multiyear*`, `tag*`, and `version*` to construct the appropriate values to generate the batch names and filenames.
+
+4. Update the `outdir`, `savepath`, and `csv_loc` to the appropriate paths. 

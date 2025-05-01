@@ -1721,6 +1721,106 @@ def read_profile_nc(
     return tmpds
 
 
+def time_is_close(
+    t1: float, 
+    t2: float, 
+    tol: float=1e-4,
+)->bool:
+    '''
+    Returns True if all time values in t1 and t2 
+    are elementwise close within tol.
+    '''
+    # get to array so we can take len (even if there is only one element)
+    t1 = np.atleast_1d(t1)
+    t2 = np.atleast_1d(t2)
+
+    if len(t1) != len(t2):
+        return False
+    return np.all(np.abs(t1 - t2) <= tol)
+
+def group_by_time_values_fuzzy(
+    ds_list: list, 
+    tol: float=1e-4,
+)->list:
+    '''
+    groups xarray datasets by their time dimension with some 
+    "fuzziness" to account for floating point errors
+
+    Parameters
+    ----------
+    ds_list : list
+    '''
+    groups = []
+
+    for i, ds in enumerate(ds_list):
+        time_i = ds['time'].values
+        matched = False
+        for group in groups:
+            ref_time = group['time']
+            if time_is_close(time_i, ref_time, tol):
+                group['indices'].append(i)
+                matched = True
+                break
+        if not matched:
+            groups.append({'time': time_i, 'indices': [i]})
+    
+    return groups
+
+def filter_mismatched_time_coords_fuzzy(
+    ds_list: list, 
+    filename_base: str,
+    tol: float=1e-4,
+    printwarnings: bool=True,
+)->list:
+    '''
+    Filter out datasets from a list whose time coordinates are mis-matched.
+    Groups datasets by time coords and assumes the smallest group must be 
+    wrong, removes those. Time coords are compared with "fuzziness" to 
+    account for floating point errors. 
+
+    Parameters
+    ----------
+    ds_list : list
+        list of xarray datasets whose time coordinates to check for 
+        consistency
+    filename_base : str
+        base name of the SCEPTER flx file. Format is "[basename].pkl"
+    tol : float
+        [yr, or time units of ds_list] the tolerance used for comparing
+        time coords
+    printwarnings: bool
+        [default=True] whether to print out warnings about excluded 
+        datasets. 
+    '''
+    groups = group_by_time_values_fuzzy(ds_list, tol=tol)
+
+    # Find largest group
+    largest_group = max(groups, key=lambda g: len(g['indices']))
+    kept_indices = largest_group['indices']
+    ref_time = largest_group['time']
+
+    # identify dropped datasets
+    all_indices = set(range(len(ds_list)))
+    dropped_indices = sorted(all_indices - set(kept_indices))
+
+    # align time coordinates of kept datasets to reference time
+    aligned_ds_list = []
+    for i in kept_indices:
+        ds = ds_list[i]
+        # ensure ref_time is always 1d (even if scalar)
+        time_values = np.atleast_1d(ref_time)
+        ds.coords['time'] = ('time', time_values)
+        aligned_ds_list.append(ds)
+
+    # report results
+    if printwarnings:
+        if dropped_indices:
+            print(f"⚠️ Dropped {len(dropped_indices)} {filename_base} dataset(s) due to mismatched time values, idx: {dropped_indices}")
+
+    # return result
+    return aligned_ds_list
+    
+
 def prof_batchprocess_singlevar(
     dfin: pd.DataFrame,
     outdir: str,
@@ -1789,6 +1889,9 @@ def prof_batchprocess_singlevar(
         # --- add to the output list
         ds_list.append(tmpds)
 
+    # --- remove any datasets whose time coords are off 
+    #     (indicating failed or incomplete run)
+    ds_list = filter_mismatched_time_coords_fuzzy(ds_list, filename_base)
     dsout = xr.merge(ds_list)
 
     # return result
