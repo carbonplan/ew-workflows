@@ -470,7 +470,7 @@ def rockdiss_in(dfin: pd.DataFrame,
     """
     Read in the roclflx_*.pkl file for a all run
     directories in dfin. Separate out just the time-
-    integrated fluxe or transient depending on value
+    integrated flux or transient depending on value
     of flx_type. return as a pandas df.
 
     Parameters
@@ -1035,7 +1035,9 @@ def emissions_calculator_df(
     barge_km: float, 
     barge_diesel_km: float, 
     Efactor_org: str, 
-    mineral: str
+    mineral: str,
+    bwi_overwrite: float = None,
+    efactor_overwrite: float = None,
 ) -> pd.DataFrame:
     """
     Read in information about amount and grain size of rock, as well as its transport
@@ -1067,11 +1069,18 @@ def emissions_calculator_df(
     barge_diesel_km : float
         [km] distance traveled by diesel barge
     
+    bwi_overwrite : float
+        if we don't want to use the default bond work index we can overwrite it here.
+        only overwritten if it's a value > 0
+    
     # -- crushing -- # 
     Efactor_org : str
         ["MRO" | "RFC" | "SERC"] which crushing Efactor to use
     mineral : str
         ["cc" | "gbas" | "wls" None] which mineral is being transported / crushed (this sets the bond work index)
+    efactor_overwrite : float
+        if we don't want to use the default e factor we can overwrite it here.
+        only overwritten if it's a value > 0
     """
     # --- CONSTANTS
     # transport -- Zhang et al., 2023, table S1
@@ -1085,6 +1094,9 @@ def emissions_calculator_df(
         "RFC": 0.57,  # [kg CO2e / kWh] emissions per electricity use in crushing per ReliabilityFirst Corporation
         "SERC": 0.61  # [kg CO2e / kWh] emissions per electricity use in crushing per SERC Reliability Corporation
     }
+    if isinstance(efactor_overwrite, float):
+        if efactor_overwrite > 0:
+            crush_Efactors[Efactor_org] = efactor_overwrite
     # BOND WORK INDEX NOTES
     # ****************************************************** # 
     # [gbas] 
@@ -1100,9 +1112,16 @@ def emissions_calculator_df(
     #
     bondwork_indices = {
         "gbas": 18.67,  # Zhang et al., 2023 (see notes above)
+        "baek23": 18.67,# Zhang et al., 2023 (see notes above)
+        "baek23nodp": 18.67,# Zhang et al., 2023 (see notes above)
+        "bridge": 18.67,# Zhang et al., 2023 (see notes above)
+        "fo": 18.67,# Zhang et al., 2023 (see notes above)
         "cc": 12.10,    # mean of limestone estimates in Kanda and Kotake (2007) and Bond, 1961
         "wls": 8.33     # see Marco and Caterina, 2022 (https://www.proquest.com/docview/2781737786?pq-origsite=gscholar&fromopenview=true&sourcetype=Conference%20Papers%20&%20Proceedings)
     }
+    if isinstance(bwi_overwrite, float):
+        if bwi_overwrite > 0:
+            bondwork_indices[mineral] = bwi_overwrite
     # ****************************************************** # 
 
     # add new empty columns to the dataframe
@@ -1193,6 +1212,178 @@ def emissions_calculator_df(
     
     # return the result
     return df
+
+
+
+def emissions_calculator_ds(
+    ds: xr.Dataset,
+    feedstock: str,
+    time_horizon: int | float,
+    p80_input: int | float,
+    Efactor_org: str,
+    truck_km_grid: np.array = np.linspace(0, 400, 20),
+    barge_km_grid: np.array = np.linspace(0, 400, 20),
+    barge_diesel_km_grid: np.array = np.linspace(0, 400, 20),
+    efactor_overwrite: bool=None,
+    bwi_overwrite: bool=None
+)->xr.Dataset:
+    '''
+    Given a dataset with coordinates for the amount and grain size of dust,
+    compute the emissions scenarios for crushing and transport in a wide range
+    of emissions scenarios. 
+
+    Return a dataset with the relevant emissions variables
+
+    Uses the constants / model of Zhang et al., 2023 
+    (https://doi.org/10.1021/acs.est.3c01658)
+
+    Parameters
+    ----------
+    ds : xr.Dataset
+        Must have coordinates named "dustrate_ton_ha_yr", "dustrad", and 
+        a variable for "timehorizon_yr"
+    feedstock : str
+        name of the feedstock used (for finding the bond work index)
+
+    # -- rocks -- # 
+    p80_input : float
+        [microns] p80 diameter before crushing the rock (see Zhang et al., 2023 table S5 for example data)
+    
+    # -- transport -- # 
+    truck_km_grid : np.array
+        [km] distance traveled by truck in transporting material
+    barge_km_grid : np.array
+        [km] distance traveled by barge in transporting material
+    barge_diesel_km_grid : np.array
+        [km] distance traveled by diesel barge
+    
+    bwi_overwrite : float
+        if we don't want to use the default bond work index we can overwrite it here.
+        only overwritten if it's a value > 0
+    
+    # -- crushing -- # 
+    Efactor_org : str
+        ["MRO" | "RFC" | "SERC"] which crushing Efactor to use
+    efactor_overwrite : float
+        if we don't want to use the default e factor we can overwrite it here.
+        only overwritten if it's a value > 0
+    
+    Returns
+    -------
+    xr.Dataset
+        Defined over coordinates of dustrate_ton_ha_yr, dustrad, truck_km, barge_km
+        and barge_diesel_km. Variables include emissions for transport, crushing, and 
+        total (sum of transport and crushing) per ton of rock; per ha/yr; and per yr. 
+
+    '''
+    # --- create a new empty dataset
+    dustrate_ton_ha_yr = xr.DataArray(ds.dustrate_ton_ha_yr.values, dims="dustrate_ton_ha_yr")
+    dustrad = xr.DataArray(ds.dustrad.values, dims="dustradius")
+    truck_km = xr.DataArray(truck_km_grid, dims="truck_km_grid")
+    barge_km = xr.DataArray(barge_km_grid, dims="barge_km_grid")
+    diesel_km = xr.DataArray(barge_diesel_km_grid, dims="diesel_km_grid")
+
+    dsout = xr.Dataset(
+        coords=dict(
+            dustrate_ton_ha_yr=ds.dustrate_ton_ha_yr.values,
+            dustrad=ds.dustrad.values,
+            truck_km=truck_km_grid,
+            barge_km=barge_km_grid,
+            barge_diesel_km=barge_diesel_km_grid
+        )
+    )
+
+    # --- CONSTANTS
+    # transport -- Zhang et al., 2023, table S1
+    truck_factor = 0.0996    # [kg CO2e / ton / km] 
+    barge_factor = 0.0282    # [kg CO2e / ton / km] 
+    barge_diesel_factor = 0.00534  # [kg CO2e / ton / km] 
+
+    # crushing -- Zhang et al., 2023, table S4 and table S6
+    crush_Efactors = {
+        "MRO": 0.67,  # [kg CO2e / kWh] emissions per electricity use in crushing per Midwest Reliability Organization
+        "RFC": 0.57,  # [kg CO2e / kWh] emissions per electricity use in crushing per ReliabilityFirst Corporation
+        "SERC": 0.61  # [kg CO2e / kWh] emissions per electricity use in crushing per SERC Reliability Corporation
+    }
+    if isinstance(efactor_overwrite, float):
+        if efactor_overwrite > 0:
+            crush_Efactors[Efactor_org] = efactor_overwrite
+    # BOND WORK INDEX NOTES
+    # ****************************************************** # 
+    # [gbas] 
+    # taken from Zhang et al., 2023, which they determine from the median
+    # of published estimates ranging from 17.10-20.41 from Kanda and Kotake,
+    # 2007; and Bond, 1961 (see Zhang et al's supp. eqn S1)
+    # 
+    # [cc]
+    # Kanda and Kotake, 2007 (Chapter 12 of "Handbook of Powder Technology")
+    # list limestone == 12.54; Dolomite == 11.27 (their table 3) 
+    # Bond, 1961 part II 
+    # list limestone == 11.61; Dolomite == 11.31
+    #
+    bondwork_indices = {
+        "gbas": 18.67,  # Zhang et al., 2023 (see notes above)
+        "baek23": 18.67,# Zhang et al., 2023 (see notes above)
+        "baek23nodp": 18.67,# Zhang et al., 2023 (see notes above)
+        "bridge": 18.67,# Zhang et al., 2023 (see notes above)
+        "fo": 18.67,# Zhang et al., 2023 (see notes above)
+        "cc": 12.10,    # mean of limestone estimates in Kanda and Kotake (2007) and Bond, 1961
+        "wls": 8.33     # see Marco and Caterina, 2022 (https://www.proquest.com/docview/2781737786?pq-origsite=gscholar&fromopenview=true&sourcetype=Conference%20Papers%20&%20Proceedings)
+    }
+    if isinstance(bwi_overwrite, float):
+        if bwi_overwrite > 0:
+            bondwork_indices[mineral] = bwi_overwrite
+    # ****************************************************** # 
+
+
+    # --- COMPUTE TRANSPORT EMISSIONS
+    da_transport_perRock = ((truck_factor * dsout['truck_km']) + (barge_factor * dsout['barge_km']) + (barge_diesel_factor * dsout['barge_diesel_km'])) / 1e3   # [tonne CO2e / ton rock]
+    da_transport_perYr = da_transport_perRock * dsout['dustrate_ton_ha_yr']  # [tonne CO2e / ha / yr]
+    da_transport_perHa = da_transport_perYr * time_horizon  # [tonne CO2e / ha]
+
+    # --- COMPUTE CRUSHING EMISSIONS
+    crush_Efactor = crush_Efactors[Efactor_org]  # either the "MRO", "RFC", or "SERC" Efactor depending on "Efactor_org"
+    crush_energy_perRock = 10 * bondwork_indices[feedstock] * ((1 / np.sqrt(dsout['dustrad']*2)) - (1 / np.sqrt(p80_input)))   # [kWh / ton rock]
+    da_crush_perRock = crush_Efactor * crush_energy_perRock / 1e3  # [tonne CO2e / ton rock]
+    da_crush_perYr = da_crush_perRock * dsout['dustrate_ton_ha_yr']  # [tonne CO2e / yr]
+    da_crush_perHa = da_crush_perYr * time_horizon  # [tonne CO2e / ha]
+
+    # --- COMPUTE TOTAL EMISSIONS
+    da_total_perRock = da_transport_perRock + da_crush_perRock
+    da_total_perYr = da_transport_perYr + da_crush_perYr
+    da_total_perHa = da_transport_perHa + da_crush_perHa
+
+
+    # --- add to the dataset
+    # [ PER ROCK ]
+    dsout['E_transport_perRock'] = da_transport_perRock
+    dsout['E_crush_perRock'] = da_crush_perRock
+    dsout['E_total_perRock'] = da_total_perRock
+    # add attributes
+    for var in ['E_transport_perRock', 'E_crush_perRock', 'E_total_perRock']:
+        dsout[var].attrs["units"] = "tonne CO2e / tonne rock"
+        dsout[var].attrs["long_name"] = "Tonnes of CO2e emitted per tonne of rock"
+
+    # [ PER YEAR ]
+    dsout['E_transport_perYr'] = da_transport_perYr
+    dsout['E_crush_perYr'] = da_crush_perYr
+    dsout['E_total_perYr'] = da_total_perYr
+    # add attributes
+    for var in ['E_transport_perYr', 'E_crush_perYr', 'E_total_perYr']:
+        dsout[var].attrs["units"] = "tonne CO2e / ha / year"
+        dsout[var].attrs["long_name"] = "Tonnes of CO2e emitted per hectare of application per year"
+
+    # [ PER HA ]
+    dsout['E_transport_perHa'] = da_transport_perHa
+    dsout['E_crush_perHa'] = da_crush_perHa
+    dsout['E_total_perHa'] = da_total_perHa
+    # add attributes
+    for var in ['E_transport_perHa', 'E_crush_perHa', 'E_total_perHa']:
+        dsout[var].attrs["units"] = "tonne CO2e / ha"
+        dsout[var].attrs["long_name"] = "Tonnes of CO2e emitted per hectare, cumulative over the time_horizon"
+
+    # ... return result
+    return dsout
 
 
 
@@ -1978,8 +2169,9 @@ def prof_batchprocess_allvars(
             if not ds.variables: # continue to next iter if it is empty
                 print(f"Warning: batch profile processing {key} returned no results. Check for typos?")
                 continue
+            # ori suggests: print(outdict)
             outdict[key] = ds
-    
+            # ds.to_netcdf()
     # return result
     return outdict
 

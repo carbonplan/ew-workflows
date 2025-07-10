@@ -8,6 +8,7 @@
 # ----------------------------------------------------
 # %%
 import os
+from pathlib import Path
 import re
 import shutil
 import subprocess
@@ -291,6 +292,55 @@ def update_clim(
                 )  # Adjust the delimiter as needed
 
 
+def add_dustsp_to_sld(
+    data: list,
+    dustfn: str,
+    outdir: str,
+    runname: str,
+) -> list:
+    '''
+    Read the mineral species in the `dust.in` file and add them to the 
+    relevant sld species in file. 
+
+    Note, the function will not prune duplicate minerals. That is 
+    accomplished by the `remove_duplicates` function. It should also
+    only be used if the dustsp minerals are not the same as the dustsp
+    name. 
+
+    Parameters
+    ----------
+    data : list
+        header with list of mineral names before adding the dustsp minerals
+    dustfn : str
+        name of the dust input file that was copied to the rundir (usually `dust.in`)
+    outdir : str
+        location of the output directory (e.g., `~/SCEPTER/scepter_output/`)
+    runname : str
+        name of the output run directory (e.g., `myrunname_field`)
+
+    Returns
+    -------
+    list 
+        header with list of all mineral short names to track in the model
+    '''
+
+    # --- read in the dust.in file
+    dust_path = os.path.join(outdir, runname, dustfn)
+    
+    # loop through dust.in lines and append to data
+    with open(dust_path, "r") as f:
+        for line in f:
+            # Skip comment lines
+            if line.strip().startswith("**") or not line.strip():
+                continue
+            # Take the first word on each line (mineral short name)
+            short_name = line.split()[0]
+            data.insert(1, short_name+'\n')
+    
+    # return result
+    return data
+
+    
 def remove_duplicates(input_file: str):
     """
     Read the input file, identify and delete duplicate lines.
@@ -338,6 +388,43 @@ def remove_duplicates(input_file: str):
                 f.write(line)
             else:
                 f.write(line.rstrip("\n"))  # don't add newline for the last entry
+
+
+def check_scepter_exec(
+    scepter_exec_name: str,
+    rundir: str,
+    modeldir: str,
+):
+    '''
+    Check if the selected scepter executable file already 
+    exists in the run directory. If it doesn't, copy it from 
+    the model directory
+
+    Paramters
+    ---------
+    scepter_exec_name : str
+        name of the scepter executable file (e.g., "scepter")
+    rundir : str
+        location of the run directory (e.g., "~/SCEPTER/scepter_output/rundir")
+    modeldir : str
+        location of the model directory (e.g., "~/SCEPTER")
+    '''
+
+    # full path to the executable in the new directory
+    exec_path_in_new_dir = os.path.join(rundir, scepter_exec_name)
+    source_exec_path = os.path.join(modeldir, scepter_exec_name)
+
+    # check if executable exists and is executable
+    if not (os.path.isfile(exec_path_in_new_dir) and os.access(exec_path_in_new_dir, os.X_OK)):
+        # make sure the desired executable exists
+        if not os.path.isfile(source_exec_path):
+            raise FileNotFoundError(f"Can't find executable '{scepter_exec_name}' in model directory")
+        
+        # copy the executable to the new directory
+        shutil.copy(source_exec_path, exec_path_in_new_dir)
+        print(f"Copied {scepter_exec_name} from {modeldir} to {rundir}.")
+    else:
+        print(f"{scepter_exec_name} already exists and is executable in {rundir}.")
 
 
 # --------------------------------------------------------------------------
@@ -504,6 +591,10 @@ def empty_file_check(
             with open(file_path, "r") as f:
                 if (file_path.endswith(".pkl") or file_path.endswith(".nc")):
                     print("ignoring .pkl and .nc files")
+                elif Path(file_path).suffix == "":
+                    print("ignoring files with no suffix")
+                elif (file_path.endswith(".in") or file_path.endswith(".res")): # ignore input files and completed file
+                    print("ignoring .in and .res files")
                 else:
                     # print(file_path)
                     content = f.read().strip()

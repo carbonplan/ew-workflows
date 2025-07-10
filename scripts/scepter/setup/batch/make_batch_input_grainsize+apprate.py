@@ -27,7 +27,7 @@ import batch_helperFxns as bhf
 # [1] vars to update, constant for all runs
 fertLevel = "low"    # name for how much fertilizer is applied
 dustsp = "cc"      # name for dust species to apply (must be from accepted list)
-extra_tag = "base_psdfull"  # another distinguishing tag
+extra_tag = "base_psdfull_singleapp"  # another distinguishing tag
 pref = f"{fertLevel}Fert_{dustsp}_{extra_tag}"
 clim_tag = None   # [string] year-span (e.g., 1950-2020) for clim input if climate files are used
                   # (if clim files are not used, set to None)
@@ -47,6 +47,10 @@ fert_dict = {
 # **************************
 
 const_dict = {
+    # --- MULTI-YEAR SPECIFIC ---
+    "dust_ts_fn": f"{dustsp}_15yr_1app_no2nd_001.csv",
+    # ---
+
     "duration": 15,  # [yr] duration of run (starts from earliest year)
     "dustsp": dustsp,
     "dustsp_2nd": "amnt",
@@ -78,6 +82,9 @@ const_dict = {
     # --- compute specific
     'aws_save': "move",              # ["move", "copy", None] whether to "move" file to aws, just copy it, or nothing at all
     'aws_bucket': "s3://carbonplan-carbon-removal/SCEPTER/scepter_output_scratch/",  # where to save at AWS (only used if 'aws_save'=True)
+    
+    # --- which executable to use
+    'scepter_exec_name': 'scepter'  # ['scepter', 'scepter_rateA', ...]
 }
 
 # %% 

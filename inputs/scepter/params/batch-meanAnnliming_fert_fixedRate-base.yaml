@@ -1,6 +1,6 @@
 control-script: singlerun.py
 control-script-dir: /home/tykukla/ew-workflows/scripts/scepter/run/control_scripts/
-batch-input: meanAnn_gbas_shortRun_base_hiFert_gs+apprate_v0.csv
+batch-input: meanAnn_fo_shortRun_base_fo_lowFert_gs+apprate_v0.csv
 batch-input-dir: /home/tykukla/ew-workflows/inputs/scepter/batch/
 default-dict: singlerun_default  # see SCEPTER/defaults/dict_singlerun.py
 model-dir: /home/tykukla/SCEPTER/

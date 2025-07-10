@@ -23,8 +23,17 @@ import argo_helper_fxns as ahf
 
 
 # %% 
-run_pars = "batch-meanAnnliming_fert_fixedRate-base.yaml"
-multiyear = False
+# ****************************************************************
+# run_pars = "batch-meanAnnliming_fert_fixedRate-base.yaml"
+# multiyear = False
+
+run_pars = "batch-meanAnnliming_fert_dust-multiyear-base.yaml"
+multiyear = True
+# ****************************************************************
+if multiyear:   # decide whether to skip the model duration check when determining reruns
+    skip_duration_check = True
+else:
+    skip_duration_check = False
 
 # %% 
 ahf.run_multiple(parameter_yaml = run_pars)
@@ -33,7 +42,7 @@ ahf.run_multiple(parameter_yaml = run_pars)
 ahf.retry_failed_runs(
     max_reruns = 5,
     max_delays = 30, 
-    rerun_delay = 5,
+    rerun_delay = 40,
     parameter_yaml = run_pars,
     multiyear = multiyear,
     maindir = "/home/tykukla/ew-workflows",
@@ -44,7 +53,8 @@ ahf.retry_failed_runs(
     duration_threshold_frac = 0.2,
     workflow_name_runmultiple = "scepter-pyworkflow.yaml",
     bleed_delay_runmultiple = 15,
-    stale_threshold_minutes = 20,
+    stale_threshold_minutes = 80,
     skip_initial_delay=False,
+    skip_duration_check=skip_duration_check,
 )
 # %%
