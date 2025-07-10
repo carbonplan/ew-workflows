@@ -425,10 +425,11 @@ def sld_flx(
     outdir: str,
     runname: str,
     feedstock: str,
+    multi_sp_feedstock: bool,
     var_fn: str = "flx_sld",
     dust_from_file: bool = True,
     molar_mass_dict: dict = molar_mass_dict
-) -> pd.DataFrame:
+) -> tuple[pd.DataFrame, dict]:
     """
     Get the feedstock fluxes. Uses the *flx_sld* files for the feedstock. Only
     time-integrated fluxes are returned. integrated dust application can be 
@@ -445,6 +446,8 @@ def sld_flx(
         name of the SCEPTER run (equivalent to the directory within outdir). Generally <RUNNAME>_field.
     feedstock : str
         name of the feedstock of rock applied to the system. Format is "[basename]-[feedstock].txt"
+    multi_sp_feedstock : bool
+        True if the feedstock has more than one mineral species, False otherwise
     var_fn : str
         base name of the SCEPTER flx file. Format is "[basename]-[cdvar].txt"
     dust_from_file : bool
@@ -459,7 +462,10 @@ def sld_flx(
     Returns
     -------
     pd.DataFrame
-        timeseries of the carbon flux metric
+        timeseries of the carbon flux metric for all feedstock components
+    dict
+        dictionary of pd.DataFrames of same format as the above pd.DataFrame, but 
+        one per feedstock component
     """
     # *****************************************
     # define unit conversion constants
@@ -469,80 +475,150 @@ def sld_flx(
     conv_factor = ton_g * m2_ha 
     # *****************************************
 
-    # get the txt file as a pandas dataframe 
-    df, dfint = get_data(outdir, runname, var_fn, cdvar=feedstock)
 
-    # multiply tdfint columns by time (required to output time-integrated fluxes)
-    dfint = dfint.apply(lambda x: x * dfint['time'] if x.name != 'time' else x)
-    
-    # add dust if needed
-    # [note] no unit conversion from mol/m2/yr to g/m2/yr is needed if 
-    # dust_from_file because that is calculated based on application in g/m2/yr 
-    if dust_from_file: 
-        dfdust0 = preprocess_txt(outdir, runname, fn='dust.txt',
-                                run_subdir = "flx", map_numeric = False)
-        # map numeric columns to numerics
-        dfnum = dfdust0.drop(columns=['dustsp1', 'dustsp2']).map(pd.to_numeric)
-        # add other columns back
-        dfdust = dfnum.copy()
-        dfdust['dustsp1'] = dfdust0['dustsp1'].copy() 
-        dfdust['dustsp2'] = dfdust0['dustsp2'].copy() 
+    # get a pandas dataframe for the feedstock and weight fraction
+    df_fs = get_multi_sp_df(
+        feedstock,
+        multi_sp_feedstock,
+        outdir,
+        runname,
+        dustfn='dust.in'
+    )
+
+
+    # --- loop through the feedstock
+    fsdict = {} # initialize empty dict to store pandas dfs
+    for idx, row in df_fs.iterrows():
+        fs_tmp = row['mineral']
+
+        # get the txt file as a pandas dataframe 
+        df, dfint = get_data(outdir, runname, var_fn, cdvar=fs_tmp)
+
+        # multiply tdfint columns by time (required to output time-integrated fluxes)
+        dfint = dfint.apply(lambda x: x * dfint['time'] if x.name != 'time' else x)
+
+        # add dust if needed
+        # [note] no unit conversion from mol/m2/yr to g/m2/yr is needed if 
+        # dust_from_file because that is calculated based on application in g/m2/yr 
+        if dust_from_file: 
+            dfdust0 = preprocess_txt(outdir, runname, fn='dust.txt',
+                                    run_subdir = "flx", map_numeric = False)
+            # map numeric columns to numerics
+            dfnum = dfdust0.drop(columns=['dustsp1', 'dustsp2']).map(pd.to_numeric)
+            # add other columns back
+            dfdust = dfnum.copy()
+            dfdust['dustsp1'] = dfdust0['dustsp1'].copy() 
+            dfdust['dustsp2'] = dfdust0['dustsp2'].copy() 
+            
+            # --- identify the feedstock index
+            columns_with_fs = [col for col in dfdust.columns if (dfdust[col] == feedstock).any()] # must use feedstock instead of fs_tmp here
+            if len(columns_with_fs) > 0:
+                fscol = columns_with_fs[0] # should only return one column, so we take the 0 index
+            else:
+                fscol = "not found"
+            if fscol == "dustsp1":
+                dust_dx = '1'
+            elif fscol == "dustsp2":
+                dust_dx = '2'
+            else:    # assume it's the first index if it doesn't exist
+                dust_dx = '1'
+            # re-calculate integral because right now it's integrated by timestep, not
+            # by the entire run itself
+            dfdust['int_dust_g_m2_yr'] = cumulative_trapezoid(dfdust[f'dust{dust_dx}_g_m2_yr'], dfdust['time'], initial=0)
+            # re-scale by the weight fraction
+            dfdust['int_dust_g_m2_yr'] = dfdust['int_dust_g_m2_yr'].apply(lambda x: x * row['wtfrac_norm'])
+            # add dust data 
+            if len(dfdust) != len(df): # if mis-matched, then match them
+                # drop duplicates in the 'time' column, keeping first occurrence
+                dfdust_nodup = dfdust.drop_duplicates(subset='time', keep='first')
+                # then interpolate the data 
+                # merge the DataFrames on 'time' using outer join to keep all time points
+                df_merged = pd.merge(df, dfdust_nodup, on='time', how='outer', suffixes=('', '_orig'))
+                # interpolate the columns of interest 
+                df_merged['int_dust_g_m2_yr'] = df_merged['int_dust_g_m2_yr'].interpolate()
+                # keep only the points in the df time steps
+                intdust = df_merged[df_merged['time'].isin(df['time'])]['int_dust_g_m2_yr'].values / 100 # divide by 100 to convert g/m2/yr to ton/ha/yr
+            else:
+                intdust = dfdust['int_dust_g_m2_yr'].values / 100 # divide by 100 to convert g/m2/yr to ton/ha/yr
+            # add integrated dust
+            dfint['int_dust_ton_ha_yr'] = intdust
+
+        else:
+            # use rain dust (already multiplied by time, so it's time-integrated)
+            # multiply by -1 to get positive values into the soil column
+            # multiply by molar_mass_dict[feedstock] to get mol/m2/yr in g/m2/yr
+            # multiply by conv_factor go get g/m2/yr to ton/ha/yr
+            dfint['int_dust_ton_ha_yr'] = -1 * dfint['rain'] * molar_mass_dict[fs_tmp] * conv_factor # (note, we multiplied rain by time earlier so we don't have to do it here)
+
+        # convert other variables to ton/ha/yr 
+        dfint['adv'] = dfint['adv'] * molar_mass_dict[fs_tmp] * conv_factor
+        dfint[fs_tmp] = dfint[fs_tmp] * molar_mass_dict[fs_tmp] * conv_factor
+
+        # pull out just the columns we want
+        tdfint = dfint.loc[:, ['time', 'int_dust_ton_ha_yr', 'adv', fs_tmp]]
+        # compute dissolution
+        tdfint['dust_minus_adv'] = tdfint['int_dust_ton_ha_yr'] - tdfint['adv'] # dust that's left after solid advection
+        tdfint['total_dissolution'] = tdfint[fs_tmp]  # net dissolution
+        tdfint['fraction_sld_advected'] = tdfint['adv'] / tdfint['int_dust_ton_ha_yr']
+        tdfint['fraction_sld_remaining'] = (tdfint['int_dust_ton_ha_yr'] - tdfint['adv'] - tdfint[fs_tmp]) / tdfint['int_dust_ton_ha_yr']
+        # fraction of non-advected rock that gets dissolved
+        tdfint['fraction_remaining_dissolved'] = tdfint['total_dissolution'] / tdfint['dust_minus_adv']
+        # fraction of total applied rock that gets dissolved
+        tdfint['fraction_total_dissolved'] = tdfint['total_dissolution'] / tdfint['int_dust_ton_ha_yr']
+
+        # store the result 
+        fsdict[fs_tmp] = tdfint
+
+    # --- create a df summing all feedstock components
+    # initialize new df
+    dfall = pd.DataFrame({
+        "time": fsdict[df_fs['mineral'][0]]['time'],
+        "int_dust_ton_ha_yr": fsdict[df_fs['mineral'][0]]['int_dust_ton_ha_yr'],
+        "adv": fsdict[df_fs['mineral'][0]]['adv'],
+        f'{feedstock}': fsdict[df_fs['mineral'][0]][df_fs['mineral'][0]],
+        "dust_minus_adv": fsdict[df_fs['mineral'][0]]['dust_minus_adv'],
+        "total_dissolution": fsdict[df_fs['mineral'][0]]['total_dissolution'],
+        'fraction_sld_advected': -9999.0,
+        'fraction_sld_remaining': -9999.0, 
+        'fraction_remaining_dissolved': -9999.0, 
+        'fraction_total_dissolved': -9999.0,     
+    })
+    # loop through all feedstocks 
+    for fs, df in fsdict.items():
+        # *************************************
+        # don't double count the first mineral
+        if (fs == df_fs['mineral'][0]) or (fs == df_fs['mineral'][4]):
+            continue 
+        # *************************************
+        # interpolate if time grid is mismatched
+        if len(dfall) != len(df): # if mis-matched, then match them
+            # Set 'time' as index (required for interpolation)
+            df1_interp = dfall.set_index('time')
+            df2_interp = df.set_index('time')
+            # Reindex df1 to df2's time grid and interpolate
+            df_interp_to_df1 = df2_interp.reindex(df1_interp.index).interpolate(method='linear')
+            # Reset index to get 'time' back as a column
+            df_interp_to_df1 = df_interp_to_df1.reset_index()
+            df = df_interp_to_df1.copy()
         
-        # --- identify the feedstock index
-        columns_with_fs = [col for col in dfdust.columns if (dfdust[col] == feedstock).any()]
-        if len(columns_with_fs) > 0:
-            fscol = columns_with_fs[0] # should only return one column, so we take the 0 index
-        else:
-            fscol = "not found"
-        if fscol == "dustsp1":
-            dust_dx = '1'
-        elif fscol == "dustsp2":
-            dust_dx = '2'
-        else:    # assume it's the first index if it doesn't exist
-            dust_dx = '1'
-        # re-calculate integral because right now it's integrated by timestep, not
-        # by the entire run itself
-        dfdust['int_dust_g_m2_yr'] = cumulative_trapezoid(dfdust[f'dust{dust_dx}_g_m2_yr'], dfdust['time'], initial=0)
-        # add dust data 
-        if len(dfdust) != len(df): # if mis-matched, then match them
-            # drop duplicates in the 'time' column, keeping first occurrence
-            dfdust_nodup = dfdust.drop_duplicates(subset='time', keep='first')
-            # then interpolate the data 
-            # merge the DataFrames on 'time' using outer join to keep all time points
-            df_merged = pd.merge(df, dfdust_nodup, on='time', how='outer', suffixes=('', '_orig'))
-            # interpolate the columns of interest 
-            df_merged['int_dust_g_m2_yr'] = df_merged['int_dust_g_m2_yr'].interpolate()
-            # keep only the points in the df time steps
-            intdust = df_merged[df_merged['time'].isin(df['time'])]['int_dust_g_m2_yr'].values / 100 # divide by 100 to convert g/m2/yr to ton/ha/yr
-        else:
-            intdust = dfdust['int_dust_g_m2_yr'].values / 100 # divide by 100 to convert g/m2/yr to ton/ha/yr
-        # add integrated dust
-        dfint['int_dust_ton_ha_yr'] = intdust
-    else:
-        # use rain dust (already multiplied by time, so it's time-integrated)
-        # multiply by -1 to get positive values into the soil column
-        # multiply by molar_mass_dict[feedstock] to get mol/m2/yr in g/m2/yr
-        # multiply by conv_factor go get g/m2/yr to ton/ha/yr
-        dfint['int_dust_ton_ha_yr'] = -1 * dfint['rain'] * molar_mass_dict[feedstock] * conv_factor # (note, we multiplied rain by time earlier so we don't have to do it here)
+        # update the columns that act as sums
+        dfall['int_dust_ton_ha_yr'] = dfall['int_dust_ton_ha_yr'] + df['int_dust_ton_ha_yr']
+        dfall['adv'] = dfall['adv'] + df['adv']
+        dfall[feedstock] = dfall[feedstock] + df[fs]
+        dfall['total_dissolution'] = dfall['total_dissolution'] + df['total_dissolution']
 
-    # convert other variables to ton/ha/yr 
-    dfint['adv'] = dfint['adv'] * molar_mass_dict[feedstock] * conv_factor
-    dfint[feedstock] = dfint[feedstock] * molar_mass_dict[feedstock] * conv_factor
-
-    # pull out just the columns we want
-    tdfint = dfint.loc[:, ['time', 'int_dust_ton_ha_yr', 'adv', feedstock]]
-    # compute dissolution
-    tdfint['dust_minus_adv'] = tdfint['int_dust_ton_ha_yr'] - tdfint['adv'] # dust that's left after solid advection
-    tdfint['total_dissolution'] = tdfint[feedstock]  # net dissolution
-    tdfint['fraction_sld_advected'] = tdfint['adv'] / tdfint['int_dust_ton_ha_yr']
-    tdfint['fraction_sld_remaining'] = (tdfint['int_dust_ton_ha_yr'] - tdfint['adv'] - tdfint[feedstock]) / tdfint['int_dust_ton_ha_yr']
+    # compute the derived columns
+    dfall['dust_minus_adv'] = dfall['int_dust_ton_ha_yr'] - dfall['adv']
+    dfall['fraction_sld_advected'] = dfall['adv'] / dfall['int_dust_ton_ha_yr']
+    dfall['fraction_sld_remaining'] = (dfall['int_dust_ton_ha_yr'] - dfall['adv'] - dfall[feedstock]) / dfall['int_dust_ton_ha_yr']
     # fraction of non-advected rock that gets dissolved
-    tdfint['fraction_remaining_dissolved'] = tdfint['total_dissolution'] / tdfint['dust_minus_adv']
+    dfall['fraction_remaining_dissolved'] = dfall['total_dissolution'] / dfall['dust_minus_adv']
     # fraction of total applied rock that gets dissolved
-    tdfint['fraction_total_dissolved'] = tdfint['total_dissolution'] / tdfint['int_dust_ton_ha_yr']
+    dfall['fraction_total_dissolved'] = dfall['total_dissolution'] / dfall['int_dust_ton_ha_yr']
 
-    # --- return result
-    return tdfint
+    # --- return results
+    return dfall, fsdict
+
     
     
 def carbAlk_adv(
@@ -939,6 +1015,65 @@ def build_cation_df(
     return outdf, tmpdf, tmpdfint
 
 
+def get_multi_sp_df(
+    feedstock: str,
+    multi_sp_feedstock: bool,
+    outdir: str,
+    runname: str,
+    dustfn: str='dust.in',
+) -> pd.DataFrame:
+    '''
+    Read in the dust.in file to make a pandas dataframe with one column
+    for the mineral short name and another for the mineral weight 
+    fractions in the feedstock. We also include a normalized weight
+    fraction column in case the weight fraction values don't add up to 1
+
+    Parameters
+    ----------
+    feedstock : str
+        name of the feedstock (should be the mineral species if multi_sp_feedstock is False)
+        (not used if multi_sp_feedstock is True)
+    multi_sp_feedstock : bool
+        True if the feedstock has more than one mineral species, False otherwise
+    outdir : str
+        location of the model output directory (`/SCEPTER/scepter_output`)
+    runname : str
+        name of the simulation and of the rundirectory in outdir
+    dustfn : str
+        name of the dust file to read in from `outdir/runname/dustfn`
+    
+    Returns
+    -------
+    pd.DataFrame
+        columns for mineral name and weight fraction
+    '''
+    # --- figure out the dust species
+    if multi_sp_feedstock:
+        dst_path = os.path.join(outdir, runname, 'dust.in')
+        with open(dst_path, "r") as f:
+            lines = f.readlines()
+        # undo formatting
+        mineral_short = [line.split()[0] for line in lines[1:]]
+        wt_fract = [float(line.split()[1]) for line in lines[1:]]
+
+        # create output dataframe
+        outdf = pd.DataFrame({
+            'mineral': mineral_short,
+            'wtfrac': wt_fract
+        })
+        # remove rows with no weight fraction
+        outdf = outdf[outdf['wtfrac'] > 0].reset_index(drop=True)
+        # normalize weight frac so it sums to 1 
+        outdf = outdf.assign(wtfrac_norm = outdf['wtfrac'] / outdf['wtfrac'].sum())
+    else:
+        outdf = pd.DataFrame({
+            'mineral': [feedstock],
+            'wtfrac': [1.0],
+            'wtfrac_norm': [1.0]
+        })
+    
+    # return the result
+    return outdf
 
 
 # %% 
@@ -947,7 +1082,8 @@ def build_cation_df(
 def cflx_calc(
     outdir: str,
     runname: str,
-    feedstock: str,
+    feedstock: list,
+    multi_sp_feedstock: dict,
     dust_from_file: bool = True,
     convert_units: bool = True,
     save_dir: str = 'postproc_flxs',
@@ -965,6 +1101,10 @@ def cflx_calc(
         name of the SCEPTER run (equivalent to the directory within outdir). Generally <RUNNAME>_field.
     feedstock : str
         ID of the feedstock used (for rock dissolution calculation)
+    multi_sp_feedstock : dict
+        dict of bools where the key is the feedstock (using names that appear in the 
+        feedstock list) and values are True if the feedstock has more than one 
+        mineral species, False otherwise
     dust_from_file : bool
         if True, then compute integrated dust fluxes from the dust.txt file. Should be 
         set to True for re-application runs since the int_sld* files are patched 
@@ -1036,12 +1176,17 @@ def cflx_calc(
         if not isinstance(feedstock, list):
             feedstock = [feedstock]
         for fs in feedstock:
-            rockdf = sld_flx(outdir, runname, fs, var_fn = "flx_sld",
-                            dust_from_file = True,
-                            molar_mass_dict = molar_mass_dict)
+            multi_sp_fs = multi_sp_feedstock[fs]
+            rockdf, dfdict = sld_flx(outdir, runname, fs, multi_sp_fs, 
+                                     var_fn = "flx_sld",
+                                     dust_from_file = True,
+                                     molar_mass_dict = molar_mass_dict)
             # save
             savename = f"rockflx_{fs}.pkl"
-            rockdf.to_pickle(os.path.join(savehere, savename))
+            rockdf.to_pickle(os.path.join(savehere, savename))    # save the bulk df
+            for fs_comp, subdf in dfdict.items():                # save the component dfs
+                savename = f"rockflx_{fs}_{fs_comp}.pkl"
+                subdf.to_pickle(os.path.join(savehere, savename))
 
 
 

@@ -11,17 +11,17 @@ spec:
   arguments:
     parameters: # allows passing parameters to the workflow via the cli
     - name: batch-input-dir # location of batch csv files (ignored by spinup runs)
-      value: /home/tykukla/aglime-swap-cdr/inputs/scepter/batch
+      value: /home/tykukla/ew-workflows/inputs/scepter/batch
     - name: batch-input # which set of inputs to use (ignored by spinup runs)
       value: test.csv
     - name: batch-index # sets the row of the batch-input to use in run (ignored by spinup runs)
       value: 1
     - name: control-script-dir # location of control scripts
-      value: /home/tykukla/aglime-swap-cdr/scripts/scepter/run/control_scripts
+      value: /home/tykukla/ew-workflows/scripts/scepter/run/control_scripts
     - name: control-script # so that you can run multiple spinups using the same template
       value: spinup_4var_s311.sh # default value
     - name: default-dict  # dictionary for defaults (over-written by batch-inputs)
-      value: default_dictionary
+      value: singlerun_default
     - name: model-dir # so that multiple people can run the model using the same template
       value: /home/tykukla/SCEPTER/ # default value
     - name: conda-env # specify the conda environment for the model run
