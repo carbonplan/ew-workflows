@@ -76,7 +76,7 @@ target/
 
 # Jupyter Notebook
 .ipynb_checkpoints
-.ipynb_checkpoints/*
+.ipynb_checkpoints/**
 # IPython
 profile_default/
 ipython_config.py
@@ -145,6 +145,7 @@ scripts/scepter/process/scratch/*
 scripts/scepter/process/runs/figures
 scripts/scepter/process/runs/batch_postproc_tmp/*
 scepter/tmp.txt
+inputs/batch/**
 scripts/scepter/figures
 scripts/scepter/figures/*
 scripts/scepter/tmp.txt
