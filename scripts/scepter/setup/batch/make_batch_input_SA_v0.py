@@ -2,11 +2,10 @@
 # ---------------------------------------------------
 # 
 # Generate batch input .csv files for SCEPTER run
+# for morris method sensitivity analysis using 
+# SALib in python
 # 
-# provide var vectors and assume we want every 
-# combination of them, or by site
-# 
-# T Kukla (CarbonPlan, 2024)
+# T Kukla (CarbonPlan, 2025)
 # 
 # ---------------------------------------------------
 
@@ -16,18 +15,86 @@ import sys
 
 import numpy as np
 import pandas as pd
+from SALib.sample import morris as morris_sampler
+from SALib.analyze import morris as morris_analyzer
 
 # --- read in batch helper functions  
 sys.path.append(os.path.abspath('/home/tykukla/ew-workflows/run_scepter'))
 import batch_helperFxns as bhf
 # ---
 
+SAVE_ON = True    # whether to save the SA settings 
+SAsetting_path = "/home/tykukla/ew-workflows/scripts/scepter/setup/batch/SA_inputs"
+
+# %% 
+# --- notes on the variables we're sampling
+# 
+# [ dustrate ] annual mean dust application flux [g m-2 yr-1]
+# [ taudust ] duration of the dust spreading event [yr]
+# [ dustrad ] radius of the dust particles [micron]
+# [ qrun ] water infiltration rate [m yr-1]
+# [ mat ] mean annual temperature [degC]
+# [ dust_mixdep ] mixing depth of the dust particles [m]
+# [ dustrate_2nd ] amount of secondary dusts (amnt) added [g m-2 yr-1]
+
+# %% 
+# --- Set up the problem; define model inputs
+# 
+# note, multiply dustrate by 100 to get from ton ha-1 yr-1 to g m-2 yr-1
+# 
+problem = {
+    "num_vars": 8,
+    "names": [ "dustrate",         "taudust",   "dustrad", "qrun",      "mat",   "dust_mixdep", "dustrate_2nd", "soilmoisture_surf"],
+    "bounds": [[0.1*100, 20*100],  [0.03, 0.1], [10, 200],  [0.1, 1.5], [3, 30], [0.05, 0.4],   [0.0, 35.0],     [0.1, 0.7] ]  
+}
+# define control values (a control run is added to the input arrays at the end in the zero index)
+param_values_ctrl = {
+    "dustrate": 0,
+    "taudust": 0.05,
+    "dustrad": 100,
+    "qrun": 0.3,
+    "mat": 8.,
+    "dust_mixdep": 0.25,
+    "dustrate_2nd": 0.,
+    "soilmoisture_surf": 0.63,
+}
+
+
+# --- generate samples using morris sampler
+param_values = morris_sampler.sample(
+    problem, 
+    N=750, 
+    num_levels=4, 
+    optimal_trajectories=50,
+    seed = 1111,
+)
+len(param_values)
+
+
+# %% 
+# --- save the SA settings --------------------------------------
+if SAVE_ON:
+    exp_name = f"SAmorris{len(param_values)}_{problem['num_vars']}_v0"
+    savesettings_here = os.path.join(SAsetting_path, exp_name)
+    if not os.path.exists(savesettings_here):
+        os.makedirs(savesettings_here)  
+        
+    # save array
+    np.save(os.path.join(savesettings_here, 'param_values.npy'), param_values)
+    # save dict
+    pd.to_pickle(problem, os.path.join(savesettings_here, "problem.pkl"))
+    # with open(os.path.join(savesettings_here, "problem.pkl"), "wb") as f:
+    #     pickle.dump(problem, f)
+# ---------------------------------------------------------------
+
+
+
 # %% 
 # --- USER INPUTS
 # [1] vars to update, constant for all runs
-fertLevel = "no"    # name for how much fertilizer is applied
+fertLevel = "SA"    # name for how much fertilizer is applied
 dustsp = "cc"      # name for dust species to apply (must be from accepted list)
-extra_tag = "base_psdfull_hiMAT"  # another distinguishing tag
+extra_tag = f"morris_{problem['num_vars']}_{len(param_values)}"  # another distinguishing tag
 pref = f"{fertLevel}Fert_{dustsp}_{extra_tag}"
 clim_tag = None   # [string] year-span (e.g., 1950-2020) for clim input if climate files are used
                   # (if clim files are not used, set to None)
@@ -37,37 +104,25 @@ fn = file_prefix + "_v0.csv"
 savepath_batch = "/home/tykukla/ew-workflows/inputs/scepter/batch"
 multi_run_split = False   # whether to split the csv into multiple files
 max_iters_per_set = 20    # [int] the number of runs per csv (only used if multi_run_split is True)
-# **************************
-# --- do not change
-fert_dict = {
-    "hi": 35.0,    # 30.0
-    "low": 3.0,    # 6.0
-    "no": 0.0,
-    }
-# **************************
 
+# --- constant values
 const_dict = {
     # --- MULTI-YEAR SPECIFIC ---
-    "dust_ts_fn": f"{dustsp}_15yr_1app_no2nd_001.csv",
+    # "dust_ts_fn": f"{dustsp}_15yr_1app_no2nd_001.csv",
     # ---
 
-    "duration": 15,  # [yr] duration of run (starts from earliest year)
+    "duration": 5,  # [yr] duration of run (starts from earliest year)
     "dustsp": dustsp,
     "dustsp_2nd": "amnt",
-    "dustrate_2nd": fert_dict[fertLevel],
     "add_secondary": False,
     "imix": 3, # mixing style (1=fickian; 2=homogeneous; 3=tilling)
     "singlerun_seasonality": False,
-    "include_psd_full": True,   # False,
+    "include_psd_full": False,   # False,
     "include_psd_bulk": False,
     'poro_iter_field': False,      # [default='false'] porosity iteration
     'poro_evol': True,            # [default='false'] porosity evolves with solid phase dissolution
     "cec_adsorption_on": False, # True,
     "climatedir": "NA",
-
-    # --- climate 
-    # 'qrun': 1.75,           # [default = None] [m yr-1] runoff
-    'mat': 30,            # [default = None] [m yr-1] mean annual temp
 
     # --- surface area and psd rules
     'sa_rule1': False,       # [True, False, "spinvalue"] SA decreases as porosity increases
@@ -109,21 +164,9 @@ by_site = {   # values must have same order as 'sites' var
     "climatefiles": ["site_311a"]  # these serve as the site name when there is no cliamte file to use
 }
 
-
-# %% 
-# [3] vars to vary within site (we'll get every combination of these two)
-# dustrate_ton_ha_yr = [0.1, 0.3, 0.6, 1, 2, 5, 7, 10, 15, 25, 35, 45, 60, 100]
-dustrate_ton_ha_yr = [0.1, 0.3, 0.6, 1, 1.5, 2, 4, 8, 10, 15, 20, 25, 30, 35, 40, 50, 60, 70, 80, 100]
-dustrad_um = [1, 3, 6, 10, 15, 20, 30, 40, 50, 60, 70, 80, 100, 125, 150, 175, 200, 250, 300]
-all_combinations = {
-    "dustrate": [x * 100 for x in dustrate_ton_ha_yr],  # [ton ha-1 yr-1 * 100 = g m-2]   
-    "dustrad": dustrad_um  # [diameter, microns] i think this gets applied to gbas and amnt equally (though amnt is fast-reacting so maybe not a big deal? )
-}
-
-
 # %% 
 # --- BUILD DATAFRAME AND SAVE
-df = bhf.build_df(pref, const_dict, sites, by_site, all_combinations, add_ctrl=True)
+df = bhf.build_df_sa(pref, const_dict, sites, by_site, param_values, problem, param_values_ctrl, add_ctrl=True)
 
 # --- add the particle size distribution inputs if relevant 
 # 
@@ -137,4 +180,5 @@ df
 bhf.save_df(df, savepath_batch, fn, multi_run_split, max_iters_per_set)
 # %%
 fn
+
 # %%

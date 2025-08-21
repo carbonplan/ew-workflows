@@ -5,6 +5,7 @@
 # %%
 from scipy.integrate import cumulative_trapezoid
 from typing import Tuple
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import xarray as xr
@@ -280,6 +281,8 @@ def co2_flx_in(dfin: pd.DataFrame,
             else:
                 outdf = pd.concat([outdf.copy(), tmpdf.copy()], ignore_index=True)
 
+        else: 
+            print(f"could not find {tdf['newrun_id_full']} -- run {run}")
         # move to the next index
         rundx += 1
      
