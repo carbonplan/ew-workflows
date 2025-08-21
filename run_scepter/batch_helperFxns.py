@@ -86,9 +86,89 @@ def build_df(pref: str, const_dict: dict, sites: list,
     return df
 
 
+# [1a] DATAFRAME FOR SENSITIVITY ANALYSIS 
+def build_df_sa(
+    pref: str,
+    const_dict: dict,
+    sites: list,
+    by_site: dict,
+    param_values: list,
+    problem: dict,
+    param_values_ctrl: dict,
+    add_ctrl: bool=True,
+) -> pd.DataFrame: 
+    '''
+    Turn SA problem (array of input parameters) into a batch dataframe.
+
+    Parameters
+    ----------
+    pref : str
+        prefix for each run name
+    const_dict : dict
+        dictionary for the values that are held constant 
+        across all simulations
+    sites : list
+        list of the site names across which to run the simulations
+    by_site : dict
+        dictionary for all the values that only vary by site
+        (each value should be a list of len(sites) where the 
+        first value corresponds to the first site indexed, and 
+        so on)
+    param_values : list
+        array of input parameters produced by the SALib sampler
+    problem : dict
+        dictionary of parameter inputs for the SALib sampler
+    param_values_ctrl : dict
+        dictionary of control parameter inputs for the control run 
+        (note, control run is placed at the zero index in the df)
+    add_ctrl : bool
+        [True | False] whether to add a control simulation with zero 
+        dust application for each site (NOTE, you may not want to add 
+        0 to your dust app rate list because it will needlessly repeat
+        for every other var in all_combinations)
+    '''
+    # [1] generate the param_values df
+    df_init = pd.DataFrame(param_values, columns = problem['names'])
+    # repeat values for the number of sites
+    df = pd.concat(
+        [df_init.assign(site=site) for site in sites],
+        ignore_index=True
+    )
+
+    # [2] add site-specific vars
+    # for each key in by_site, alternate the values for the corresponding site
+    for key, values in by_site.items():
+        df[key] = [values[site_idx] for site_idx in range(len(sites)) for _ in range(len(df))]
+
+    # [3] add constant vars
+    for key, value in const_dict.items():
+        df[key] = value
+
+    # [4] add control cases (no dust application) if add_ctrl is True
+    if add_ctrl:
+        # loop through sites
+        for thissite in reversed(sites):
+            tmp_row = df[df['site'] == thissite].iloc[0]
+            # set dust to zero
+            tmp_row['dustrate'] = 0.0
+            # set other vars
+            for key, value in param_values_ctrl.items():
+                tmp_row[key] = value
+            # concat to top row
+            df = pd.concat([pd.DataFrame([tmp_row]), df], ignore_index=True)
+
+    # [5] add the newrun ID
+    df = newrun_id_fxn(df, pref, None, add_index = True)
+    # check that all the run ids are unique and return a warning if not
+    if not df['newrun_id'].is_unique:
+        warnings.warn("Column newrun_id contains duplicate entries. The latter run ID will likely overwrite the former")
+
+    # return result
+    return df
+
 
 # [2] MAKE NEWRUN ID
-def newrun_id_fxn(df: pd.DataFrame, pref: str, clim_tag: str) -> pd.DataFrame:
+def newrun_id_fxn(df: pd.DataFrame, pref: str, clim_tag: str, add_index: bool=False) -> pd.DataFrame:
     """
     Generate an ID string for a given run based on the inputs (especially
     the application rate, duration, and dust radius -- put the dust type in 
@@ -105,6 +185,9 @@ def newrun_id_fxn(df: pd.DataFrame, pref: str, clim_tag: str) -> pd.DataFrame:
     clim_tag : str
         the tag for the years of climate model output used (e.g., '1950-2020'). 
         If no climate model data is used, set this to None
+    add_index : bool
+        True to add the row index to the runname (ensures no duplicate names, esp for
+        sensitivity analysis applications). Defaults to false 
     
     Returns
     -------
@@ -128,14 +211,16 @@ def newrun_id_fxn(df: pd.DataFrame, pref: str, clim_tag: str) -> pd.DataFrame:
         # (not using dur for now because the python script in SCEPTER repo adds it in itself)
 
         # create the new ID
-        this_id = '_'.join([s for s in [pref, site, clim_tag, dstflx, psize] if s is not None])
+        if add_index: 
+            this_id = '_'.join([s for s in [pref, site, clim_tag, dstflx, psize, str(index)] if s is not None])
+        else:
+            this_id = '_'.join([s for s in [pref, site, clim_tag, dstflx, psize] if s is not None])
         
         # add it to the pandas df
         df.at[index, 'newrun_id'] = this_id
     
     # return result
     return df
-
     
 # [3] SAVE DATAFRAME AS CSV
 def save_df(df: pd.DataFrame, savepath_batch: str, fn: str,
