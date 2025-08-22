@@ -14,6 +14,7 @@ Kanzaki, Y., Chiaravalloti, I., Zhang, S., Planavsky, N. J., & Reinhard, C. T. (
 The repository relies on Argo-workflows to run batches of SCEPTER simulations. Quickstart instructions for running SCEPTER with or without Argo can be found in `scepter-quickstart.md`. 
 
 ## contents
+This is the content tree for the latest release of the code. 
 ```
 ├── inputs/scepter/       # input files for SCEPTER simulations
 |    ├── clim/            # climate inputs 
