@@ -14,6 +14,7 @@ Kanzaki, Y., Chiaravalloti, I., Zhang, S., Planavsky, N. J., & Reinhard, C. T. (
 The repository relies on Argo-workflows to run batches of SCEPTER simulations. Quickstart instructions for running SCEPTER with or without Argo can be found in `scepter-quickstart.md`. 
 
 ## contents
+```
 ├── inputs/scepter/       # input files for SCEPTER simulations
 |    ├── clim/            # climate inputs 
 |    ├── dust/            # dust flux inputs for variable dust application runs
@@ -40,7 +41,7 @@ The repository relies on Argo-workflows to run batches of SCEPTER simulations. Q
 ├── pyproject.toml
 ├── README.md              # this file
 └── scepter-quickstart.md  # instructions for running SCEPTER using this repository
-
+```
 
 ## license
 This work is licensed under the MIT license. 
