@@ -153,8 +153,10 @@ inputs/scepter/batch/*
 
 cesm2
 cesm2/*
-era5
-era5/*
+era5/scepter-ready
+era5/scepter-ready/*
+era5/figures
+era5/figures/*
 tests
 tests/*
 run_scepter/scratch*
