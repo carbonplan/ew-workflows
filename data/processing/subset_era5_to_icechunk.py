@@ -52,7 +52,7 @@ ds_subset = ds_subset.sel(latitude=slice(maxlat, minlat),
                             )
 
 storage = icechunk.s3_storage(bucket="carbonplan-carbon-removal", prefix="era5/preprocessed_icechunk", from_env=True)
-repo = icechunk.Repository.create(storage)
+repo = icechunk.Repository.open_or_create(storage)
 
 for var in list(ds_subset):
     print(f'writing {var}')
