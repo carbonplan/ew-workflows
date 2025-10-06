@@ -32,6 +32,7 @@ def read_postproc_flux(
     outdir: str,
     calc_list: list,
     dfin_cols_to_keep: list,
+    flx_type: str='int_flx',
     rockdiss_feedstock: str = None,
     subdir: str = "postproc_flxs",
 ) -> dict:
@@ -55,6 +56,9 @@ def read_postproc_flux(
     dfin_cols_to_keep : list
         list of columns from dfin that we want to add to the final dfs
         (generally the groups / dims for later xr datasets)
+    flx_type: str
+        ['int_flx' | 'flx'] pull out the integrated flux or 
+        the transient flux, respectively
     rockdiss_feedstock : str
         the feedstock to use for the rock dissolution files
         (not used if rockdiss is absent from calc_list)
@@ -78,19 +82,26 @@ def read_postproc_flux(
     # --- OPTION 1: "co2_flx" ------------------------
     if "co2_flx" in calc_list:
         print("solving co2_flx")
-        outdict['co2_flx'] = co2_flx_in(dfin, outdir, dfin_cols_to_keep, rockdiss_feedstock)
+        outdict['co2_flx'] = co2_flx_in(
+            dfin, outdir, dfin_cols_to_keep, 
+            rockdiss_feedstock, flx_type=flx_type,
+        )
 
     # --- OPTION 2: "camg_flx" -----------------------
     if "camg_flx" in calc_list:
         print("solving camg_flx")
-        outdict['camg_flx'] = cation_flx_in(dfin, outdir, dfin_cols_to_keep, rockdiss_feedstock,
-                                            cations_to_track = ['ca', 'mg'])
+        outdict['camg_flx'] = cation_flx_in(
+            dfin, outdir, dfin_cols_to_keep, rockdiss_feedstock,
+            cations_to_track = ['ca', 'mg'], flx_type=flx_type,
+        )
     
     # --- OPTION 3: "totcat_flx" ---------------------
     if "totcat_flx" in calc_list:
         print("solving totcat_flx")
-        outdict['totcat_flx'] = cation_flx_in(dfin, outdir, dfin_cols_to_keep, rockdiss_feedstock,
-                                              cations_to_track = ['ca', 'mg', 'na', 'k'])
+        outdict['totcat_flx'] = cation_flx_in(
+            dfin, outdir, dfin_cols_to_keep, rockdiss_feedstock,
+            cations_to_track = ['ca', 'mg', 'na', 'k'], flx_type=flx_type,
+        )
     
     # --- OPTION 4: "carbalk_flx" --------------------
     if "carbalk_flx" in calc_list:
@@ -615,6 +626,7 @@ def cdr_int_per_group(
     time_horizon: float,
     calc_list: list,
     dfin_cols_to_keep: list,
+    bysite: bool=False,
 ) -> Tuple[dict, dict]:
     """
     Compute CDR (or difference from control) for each of the methods
@@ -636,7 +648,9 @@ def cdr_int_per_group(
         the .pkl files that need to be read in)
     dfin_cols_to_keep : list
         list of columns from dfin that we want to keep in the output files
-
+    bysite : bool
+        [True] if dfin includes more than one site, otherwise [False]
+    
     Returns 
     -------
     dict 
@@ -646,7 +660,8 @@ def cdr_int_per_group(
         CDR calcs integrated to the time horizon
     """
     # --- create an empty dictionary to hold the results
-    outdict_full = outdict_sum = {}
+    outdict_full = {}
+    outdict_sum = {}
 
     #
     # iterate through options in the calc_list
@@ -657,7 +672,7 @@ def cdr_int_per_group(
         tc = 'co2_flx'
         print(f"solving {tc}")
         dfin = flx_dict[tc]
-        outdict_full[tc], outdict_sum[tc] = co2_flx_cdr(dfin, time_horizon, dfin_cols_to_keep)
+        outdict_full[tc], outdict_sum[tc] = co2_flx_cdr(dfin, time_horizon, dfin_cols_to_keep, bysite=bysite)
 
     # --- OPTION 2: "camg_flx" -----------------------
     if "camg_flx" in calc_list:
@@ -666,7 +681,7 @@ def cdr_int_per_group(
         dfin = flx_dict[tc]
         # (note, we use the same cation_flx_cdr fxn for both camg and totcat
         #  because it just calculates based on whatever cats are provided)
-        outdict_full[tc], outdict_sum[tc] = cation_flx_cdr(dfin, time_horizon, dfin_cols_to_keep, cation_tag=tc)
+        outdict_full[tc], outdict_sum[tc] = cation_flx_cdr(dfin, time_horizon, dfin_cols_to_keep, cation_tag=tc, bysite=bysite)
     
     # --- OPTION 3: "totcat_flx" ---------------------
     if "totcat_flx" in calc_list:
@@ -675,7 +690,7 @@ def cdr_int_per_group(
         dfin = flx_dict[tc]
         # (note, we use the same cation_flx_cdr fxn for both camg and totcat
         #  because it just calculates based on whatever cats are provided)
-        outdict_full[tc], outdict_sum[tc] = cation_flx_cdr(dfin, time_horizon, dfin_cols_to_keep, cation_tag=tc)
+        outdict_full[tc], outdict_sum[tc] = cation_flx_cdr(dfin, time_horizon, dfin_cols_to_keep, cation_tag=tc, bysite=bysite)
     
     # --- OPTION 4: "carbalk_flx" --------------------
     if "carbalk_flx" in calc_list:
@@ -687,7 +702,7 @@ def cdr_int_per_group(
         tc = 'rockdiss'
         print(f"solving {tc}")
         dfin = flx_dict[tc]
-        outdict_full[tc], outdict_sum[tc] = rockdiss_synth(dfin, time_horizon, dfin_cols_to_keep)
+        outdict_full[tc], outdict_sum[tc] = rockdiss_synth(dfin, time_horizon, dfin_cols_to_keep, bysite=bysite)
 
     # 
     # return the result
@@ -699,6 +714,7 @@ def co2_flx_cdr(
     dfin: pd.DataFrame, 
     time_horizon: float,
     dfin_cols_to_keep: list,
+    bysite: bool = False,
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """
     Read in the Pandas DataFrame for the co2flx data 
@@ -713,6 +729,8 @@ def co2_flx_cdr(
         number of years over which to integrate CDR 
     dfin_cols_to_keep : list
         list of columns from dfin that we want to keep in the output files
+    bysite : bool
+        [True] if dfin includes more than one site, otherwise [False]
     
     Returns
     -------
@@ -726,8 +744,11 @@ def co2_flx_cdr(
 
     # get control run
     df_ctrl = dfin.loc[dfin['ctrl'] == True]
-    # only the numeric columns for interpolation
-    tdf_ctrl = df_ctrl.select_dtypes(include=[np.number])
+    # get control runs
+    df_ctrl = dfin.loc[dfin['ctrl'] == True]
+    if not bysite: 
+        # only the numeric columns for interpolation
+        tdf_ctrl = df_ctrl.select_dtypes(include=[np.number])
     # all cases
     df_case = dfin.loc[dfin['ctrl'] == False]
 
@@ -744,9 +765,15 @@ def co2_flx_cdr(
         # create the temp output df
         tdfout = tdf[cols_to_keep].copy()
 
+        # get control if going by site
+        if bysite:
+            # find the control case (only the numeric columns for integration)
+            tdf_ctrl = df_ctrl[df_ctrl['site'] == tdf['site'].values[0]].select_dtypes(include=[np.number])
+
         # if case and control are different lengths, we need to interpolate
         # (this happens sometimes due to shifts in how the timesteps are handled in a given run)
         if len(tdf) != len(tdf_ctrl):
+            # print(f'{len(tdf)} --- {len(tdf_ctrl)}')
             tdf_ctrl = tdf_ctrl.set_index('time').reindex(tdf['time']).interpolate(method='linear').reset_index().copy()
 
         # --- DIFFUSIVE CDR: 
@@ -823,6 +850,7 @@ def cation_flx_cdr(
     time_horizon: float,
     dfin_cols_to_keep: list,
     cation_tag: str,
+    bysite: bool=False,
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """
     Read in the Pandas DataFrame for the co2flx data 
@@ -841,6 +869,8 @@ def cation_flx_cdr(
         tag for the 'cdr_fxn' var that's saved in the output. Use
         `totcat_flx` for total cations, or `camg_flx` for just calcium and 
         magnesium
+    bysite : bool
+        [True] if dfin includes more than one site, otherwise [False]
     
     Returns
     -------
@@ -852,10 +882,11 @@ def cation_flx_cdr(
     cols_to_keep = ['time', 'units', 'flx_type']
     cols_to_keep.extend(dfin_cols_to_keep)
 
-    # get control run
+    # get control runs
     df_ctrl = dfin.loc[dfin['ctrl'] == True]
-    # only the numeric columns for interpolation
-    tdf_ctrl = df_ctrl.select_dtypes(include=[np.number])
+    if not bysite: 
+        # only the numeric columns for interpolation
+        tdf_ctrl = df_ctrl.select_dtypes(include=[np.number])
     # all cases
     df_case = dfin.loc[dfin['ctrl'] == False]
 
@@ -871,6 +902,11 @@ def cation_flx_cdr(
 
         # create the temp output df
         tdfout = tdf[cols_to_keep].copy()
+
+        # get control if going by site
+        if bysite:
+            # find the control case (only the numeric columns for integration)
+            tdf_ctrl = df_ctrl[df_ctrl['site'] == tdf['site'].values[0]].select_dtypes(include=[np.number])
 
         # if case and control are different lengths, we need to interpolate
         # (this happens sometimes due to shifts in how the timesteps are handled in a given run)
@@ -946,6 +982,7 @@ def rockdiss_synth(
     dfin: pd.DataFrame,
     time_horizon: float,
     dfin_cols_to_keep: list,
+    bysite: bool=False,
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """
     Read in the Pandas DataFrame for the rockdiss data 
@@ -964,6 +1001,8 @@ def rockdiss_synth(
         number of years over which to integrate CDR 
     dfin_cols_to_keep : list
         list of columns from dfin that we want to keep in the output files
+    bysite : bool
+        [True] if dfin includes more than one site, otherwise [False]
     
     Returns
     -------
@@ -980,10 +1019,11 @@ def rockdiss_synth(
     if overlap: # remove the overlap 
         cols_to_discard = [x for x in cols_to_discard if x not in overlap]
 
-    # get control run
+    # get control runs
     df_ctrl = dfin.loc[dfin['ctrl'] == True]
-    # only the numeric columns for interpolation
-    tdf_ctrl = df_ctrl.select_dtypes(include=[np.number])
+    if not bysite: 
+        # only the numeric columns for interpolation
+        tdf_ctrl = df_ctrl.select_dtypes(include=[np.number])
     # all cases
     df_case = dfin.loc[dfin['ctrl'] == False]
 
@@ -999,6 +1039,11 @@ def rockdiss_synth(
 
         # create the temp output df
         tdfout = tdf.drop(columns=cols_to_discard).copy()
+
+        # get control if going by site
+        if bysite:
+            # find the control case (only the numeric columns for integration)
+            tdf_ctrl = df_ctrl[df_ctrl['site'] == tdf['site'].values[0]].select_dtypes(include=[np.number])
 
         # we're not doing any comparison to the control here 
         # because we assume the control is no application
@@ -1211,7 +1256,7 @@ def emissions_calculator_df(
         try:
             df[col] = pd.to_numeric(df[col], errors="raise")  # Raises error for invalid conversion
         except ValueError as e:
-            print(f"Emissions Calculator: Cannot convert column '{col}' to float: {e}")
+            print(f"Emissions Calculator: Cannot convert column '{col}' to float: {e}. Ignore if expected.")
     
     # return the result
     return df
@@ -1395,6 +1440,7 @@ def cdr_ds(
     dims: list,
     cdr_calc_list: list,
     loss_percents: np.array = np.linspace(100,1,50),
+    skip_loss: bool=False,
 ) -> xr.Dataset:
     """
     Generate an xarray dataset for the removal and emissions fluxes
@@ -1430,7 +1476,9 @@ def cdr_ds(
         tc = 'co2_flx'
         print(f"solving {tc}")
         dfin = cdr_dict[tc]
-        dsout_dict[tc] = co2_flx_cdr_ds(dfin, dims, loss_percents)
+        dsout_dict[tc] = co2_flx_cdr_ds(
+            dfin, dims, loss_percents, skip_loss=skip_loss,
+        )
 
     # --- OPTION 2: "camg_flx" -----------------------
     if "camg_flx" in cdr_calc_list:
@@ -1439,7 +1487,10 @@ def cdr_ds(
         dfin = cdr_dict[tc]
         # (note, we use the same cation_flx_cdr fxn for both camg and totcat
         #  because it just calculates based on whatever cats are provided)
-        dsout_dict[tc] = cation_flx_cdr_ds(dfin, dims, loss_percents, cation_flag='camg', cdr_calc_cols=["co2pot_tot", "co2pot_adv", "DICpot_adv"])
+        dsout_dict[tc] = cation_flx_cdr_ds(
+            dfin, dims, loss_percents, cation_flag='camg', 
+            cdr_calc_cols=["co2pot_tot", "co2pot_adv", "DICpot_adv"], skip_loss=skip_loss,
+        )
     
     # --- OPTION 3: "totcat_flx" ---------------------
     if "totcat_flx" in cdr_calc_list:
@@ -1448,7 +1499,10 @@ def cdr_ds(
         dfin = cdr_dict[tc]
         # (note, we use the same cation_flx_cdr fxn for both camg and totcat
         #  because it just calculates based on whatever cats are provided)
-        dsout_dict[tc] = cation_flx_cdr_ds(dfin, dims, loss_percents, cation_flag='totcat', cdr_calc_cols=["co2pot_tot", "co2pot_adv", "DICpot_adv"])
+        dsout_dict[tc] = cation_flx_cdr_ds(
+            dfin, dims, loss_percents, cation_flag='totcat', 
+            cdr_calc_cols=["co2pot_tot", "co2pot_adv", "DICpot_adv"], skip_loss=skip_loss,
+        )
     
     # --- OPTION 4: "carbalk_flx" --------------------
     if "carbalk_flx" in cdr_calc_list:
@@ -1463,6 +1517,7 @@ def cdr_ds(
         dfin = cdr_dict[tc]
         dsout_dict[tc] = rockdiss_ds(dfin, dims)
 
+    # return dsout_dict
     # merge the dictionary of datasets into a single ds
     dsout = xr.merge(dsout_dict.values())
     # 
@@ -1477,6 +1532,7 @@ def co2_flx_cdr_ds(
     loss_percents: np.array,
     cdr_calc_cols: list=["cdr_dif", "cdr_adv", "cdr_adv_plus_newSIC", "cdr_SIConly", "tot_adv"],
     dustrate_name: str = "dustrate_ton_ha_yr",
+    skip_loss: bool=False,
 ) -> xr.Dataset:
     """
     Get the removals from the co2flx calculations in a dataset form
@@ -1496,6 +1552,9 @@ def co2_flx_cdr_ds(
         downstream loss
     dustrate_name : str
         column name for the dustrate
+    skip_loss : bool
+        [True] to skip computing the downstream loss factor, False to include it
+        (note, set skip_loss to True if it's not time integrated)
 
     Returns
     -------
@@ -1506,7 +1565,10 @@ def co2_flx_cdr_ds(
     cdr_cols = [col for col in cdr_calc_cols if col.startswith('cdr')]
 
     # add loss_percents to the dims
-    dims_full = dims + ['loss_percent']
+    if skip_loss:
+        dims_full = dims
+    else:
+        dims_full = dims + ['loss_percent']
 
 
     # determine the columns we want to drop
@@ -1517,29 +1579,32 @@ def co2_flx_cdr_ds(
     cdr_cols_andDims = dims + cdr_calc_cols
     dfx_cdr_short = dfx[cdr_cols_andDims]
 
-    # track index
-    lossdx = 0
-    for loss in loss_percents:
-        # pull out just the full dat
-        tdfx = dfx_cdr_short.copy()
+    if skip_loss:
+        dfx_cdr_full = dfx_cdr_short.copy()
+    else:
+        # track index
+        lossdx = 0
+        for loss in loss_percents:
+            # pull out just the full dat
+            tdfx = dfx_cdr_short.copy()
 
-        # add the loss percent
-        tdfx['loss_percent'] = loss
+            # add the loss percent
+            tdfx['loss_percent'] = loss
 
-        # compute updated loss
-        # (calculation is same for sil and cc because we're taking the loss relative
-        #  to the TOTAL amount of carbon exported from the domain)
-        # (we use np.maximum so that any negative advective fluxes representing
-        #  a decrease (unlikely) doesn't increase CDR)
-        tdfx = tdfx.apply(lambda x: x - np.maximum(((loss/100) * tdfx['tot_adv']), 0) if x.name in cdr_cols else x)
+            # compute updated loss
+            # (calculation is same for sil and cc because we're taking the loss relative
+            #  to the TOTAL amount of carbon exported from the domain)
+            # (we use np.maximum so that any negative advective fluxes representing
+            #  a decrease (unlikely) doesn't increase CDR)
+            tdfx = tdfx.apply(lambda x: x - np.maximum(((loss/100) * tdfx['tot_adv']), 0) if x.name in cdr_cols else x)
 
-        # bring together
-        if lossdx == 0:
-            dfx_cdr_full = tdfx.drop(columns='tot_adv').copy()
-        else:
-            dfx_cdr_full = pd.concat([dfx_cdr_full.copy(), tdfx.drop(columns='tot_adv').copy()])
-        
-        lossdx += 1
+            # bring together
+            if lossdx == 0:
+                dfx_cdr_full = tdfx.drop(columns='tot_adv').copy()
+            else:
+                dfx_cdr_full = pd.concat([dfx_cdr_full.copy(), tdfx.drop(columns='tot_adv').copy()])
+            
+            lossdx += 1
 
     # create the cdr dataset
     dfx_full_idx = dfx_cdr_full.set_index(dims_full)
@@ -1576,6 +1641,7 @@ def cation_flx_cdr_ds(
     cation_flag: str,
     cdr_calc_cols: list=["co2pot_tot", "co2pot_adv", "DICpot_adv"],
     dustrate_name: str = "dustrate_ton_ha_yr",
+    skip_loss: bool=False,
 ) -> xr.Dataset:
     """
     Get the removals from the cation calculations in a dataset form
@@ -1597,6 +1663,9 @@ def cation_flx_cdr_ds(
         downstream loss
     dustrate_name : str
         column name for the dustrate
+    skip_loss : bool
+        [True] to skip computing the downstream loss factor, False to include it
+        (note, set skip_loss to True if it's not time integrated)
 
     Returns
     -------
@@ -1615,7 +1684,10 @@ def cation_flx_cdr_ds(
     cdr_cols = [col for col in cdr_calc_cols if col.startswith('co2pot')]
 
     # add loss_percents to the dims
-    dims_full = dims + ['loss_percent']
+    if skip_loss:
+        dims_full = dims
+    else:
+        dims_full = dims + ['loss_percent']
 
     # determine the columns we want to drop
     cols_to_discard = ['units', 'flx_type', 'cdr_fxn', 'time_horizon']
@@ -1625,29 +1697,32 @@ def cation_flx_cdr_ds(
     cdr_cols_andDims = dims + cdr_calc_cols
     dfx_cdr_short = dfx[cdr_cols_andDims]
 
-    # track index
-    lossdx = 0
-    for loss in loss_percents:
-        # pull out just the full dat
-        tdfx = dfx_cdr_short.copy()
+    if skip_loss:
+        dfx_cdr_full = dfx_cdr_short.copy()
+    else:
+        # track index
+        lossdx = 0
+        for loss in loss_percents:
+            # pull out just the full dat
+            tdfx = dfx_cdr_short.copy()
 
-        # add the loss percent
-        tdfx['loss_percent'] = loss
+            # add the loss percent
+            tdfx['loss_percent'] = loss
 
-        # compute updated loss
-        # (calculation is same for sil and cc because we're taking the loss relative
-        #  to the TOTAL amount of carbon exported from the domain)
-        # (we use np.maximum so that any negative advective fluxes representing
-        #  a decrease (unlikely) doesn't increase CDR)
-        tdfx = tdfx.apply(lambda x: x - np.maximum(((loss/100) * tdfx['DICpot_adv']), 0) if x.name in cdr_cols else x)
+            # compute updated loss
+            # (calculation is same for sil and cc because we're taking the loss relative
+            #  to the TOTAL amount of carbon exported from the domain)
+            # (we use np.maximum so that any negative advective fluxes representing
+            #  a decrease (unlikely) doesn't increase CDR)
+            tdfx = tdfx.apply(lambda x: x - np.maximum(((loss/100) * tdfx['DICpot_adv']), 0) if x.name in cdr_cols else x)
 
-        # bring together
-        if lossdx == 0:
-            dfx_cdr_full = tdfx.drop(columns='DICpot_adv').copy()
-        else:
-            dfx_cdr_full = pd.concat([dfx_cdr_full.copy(), tdfx.drop(columns='DICpot_adv').copy()])
-        
-        lossdx += 1
+            # bring together
+            if lossdx == 0:
+                dfx_cdr_full = tdfx.drop(columns='DICpot_adv').copy()
+            else:
+                dfx_cdr_full = pd.concat([dfx_cdr_full.copy(), tdfx.drop(columns='DICpot_adv').copy()])
+            
+            lossdx += 1
 
     # create the cdr datasets
     dfx_full_idx = dfx_cdr_full.set_index(dims_full)
@@ -1706,7 +1781,8 @@ def rockdiss_ds(
     # determine the columns we want to drop
     cols_to_discard = ['truck_km', 'barge_km', 'barge_diesel_km', 'p80_input',
                         'Efactor_org', 'bondwork_index', 'time_horizon']
-    dfx = dfin.drop(columns=cols_to_discard)
+    cols_to_discard_present = [c for c in cols_to_discard if c in dfin.columns]
+    dfx = dfin.drop(columns=cols_to_discard_present)
 
     # rename the adv column to be clearer that it's rock
     dfx = dfx.rename(columns = {'adv': 'adv_feedstock'})
@@ -1715,15 +1791,10 @@ def rockdiss_ds(
     dfx_idx = dfx.set_index(dims)
     dsx = xr.Dataset.from_dataframe(dfx_idx)
 
-    # --- add attributes
-    dsx['time_horizon'] = dfin['time_horizon'][0]
-    dsx['truck_km'] = dfin['truck_km'][0]
-    dsx['barge_km'] = dfin['barge_km'][0]
-    dsx['barge_diesel_km'] = dfin['barge_diesel_km'][0]
-    dsx['p80_input'] = dfin['p80_input'][0]
-    dsx['Efactor_org'] = dfin['Efactor_org'][0]
-    dsx['bondwork_index'] = dfin['bondwork_index'][0]
-
+    # --- add attributes back in
+    for thiscol in cols_to_discard_present:
+        dsx[thiscol] = dfin[thiscol][0]
+    
     for var_name in dsx.data_vars:
         dsx[var_name].attrs["cdr_fxn"] = 'rockdiss'
 

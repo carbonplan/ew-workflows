@@ -220,11 +220,14 @@ def create_dsdict_across_timeResolutions(
     dsvar: xr.Dataset,
     default_res_name: str,
     default_resolution: bool,
+    daily_mean: bool, 
+    daily_ltm: bool,
     monthly_mean: bool,
     monthly_ltm: bool,
     annual_mean: bool,
     annual_ltm: bool,
     roundtime_to: int = 5,
+    start_at_zero: bool=True,
 )->dict:
     '''
     Compute climate for different time resolutions and put 
@@ -242,6 +245,10 @@ def create_dsdict_across_timeResolutions(
         ds in the output dictionary). This is ignored if default_resolution=False.
     default_resolution : bool
         True to keep the data at the default resolution.
+    daily_mean : bool
+        True to keep the data averaged at each day 
+    daily_ltm : bool
+        True to keep the long-term daily mean of the data (length = 365)
     monthly_mean : bool
         True to keep the data averaged at each month (length = 12 * nyears)
     monthly_ltm : bool
@@ -252,6 +259,9 @@ def create_dsdict_across_timeResolutions(
         True to keep the long-term annual mean of the data (length = 1)
     rountime_to : int
         number of decimal points in decimal_year (5 usually works for hourly)
+    start_at_zero : bool
+        whether to make the `time_years` start at zero. If false,
+        time_years starts at 0+dt
     
     Returns
     -------
@@ -264,13 +274,47 @@ def create_dsdict_across_timeResolutions(
 
     # [ default resolution ]
     if default_resolution:
+        if not start_at_zero: # shift values by one dt
+            dt = np.diff(dsvar.time_years.values)[0]
+            dsvar = dsvar.assign_coords(time_years=dsvar['time_years'] + dt)
         ds_dict[default_res_name] = dsvar.copy()
+
+
+    # [ daily ]
+    if daily_mean:
+        tmpds_daily = dsvar.resample(time='D').mean()
+        # update time_years and save
+        if not start_at_zero:
+            tmpds_daily2 = add_decimal_year_coord(tmpds_daily, roundtime_to=roundtime_to)
+            dt = np.diff(tmpds_daily2.time_years.values)[0]
+            ds_dict['daily'] = tmpds_daily2.assign_coords(time_years=tmpds_daily2['time_years'] + dt)
+        else:
+            ds_dict['daily'] = add_decimal_year_coord(tmpds_daily, roundtime_to=roundtime_to)
+
+    # [ daily ltm ]
+    if daily_ltm:
+        tmpds_daily = dsvar.resample(time='D').mean()
+        # then get ltm
+        tmpds_daily_ltm = tmpds_daily.groupby("time.dayofyear").mean("time").copy()
+        # update time_years (which was lost from the mean)
+        time_years_daily_ltm = tmpds_daily_ltm.dayofyear.values/365 - (1/365)  # (time starts at zero)
+        tmpds_daily_ltm = tmpds_daily_ltm.assign_coords(time_years=('dayofyear', time_years_daily_ltm))  # assign coords
+        if not start_at_zero:
+            dt = np.diff(tmpds_daily_ltm.time_years.values)[0]
+            tmpds_daily_ltm = tmpds_daily_ltm.assign_coords(time_years=tmpds_daily_ltm['time_years'] + dt)
+        # add to dict
+        ds_dict['daily_ltm'] = tmpds_daily_ltm
 
     # [ monthly ]
     if monthly_mean:
         tmpds_monthly = dsvar.resample(time='1MS').mean()
         # update time_years and save (lost from the mean)
-        ds_dict['monthly'] = add_decimal_year_coord(tmpds_monthly, roundtime_to=roundtime_to)
+        if not start_at_zero:
+            tmpds_monthly2 = add_decimal_year_coord(tmpds_monthly, roundtime_to=roundtime_to)
+            dt = np.diff(tmpds_monthly2.time_years.values)[0]
+            ds_dict['monthly'] = tmpds_monthly2.assign_coords(time_years=tmpds_monthly2['time_years'] + dt)
+        else:
+            ds_dict['monthly'] = add_decimal_year_coord(tmpds_monthly, roundtime_to=roundtime_to)
 
     # [ monthly ltm ]
     if monthly_ltm:
@@ -283,27 +327,48 @@ def create_dsdict_across_timeResolutions(
         # update time_years (which was lost from the mean)
         time_years_monthly_ltm = (tmpds_monthly_ltm.month.values / 12) - (1/12)  # (time starts at zero)
         tmpds_monthly_ltm = tmpds_monthly_ltm.assign_coords(time_years=('month', time_years_monthly_ltm))  # assign coords
+        if not start_at_zero:
+            dt = np.diff(tmpds_monthly_ltm.time_years.values)[0]
+            tmpds_monthly_ltm = tmpds_monthly_ltm.assign_coords(time_years=tmpds_monthly_ltm['time_years'] + dt)
         ds_dict['monthly_ltm'] = tmpds_monthly_ltm
 
     # [ annual ]
     if annual_mean:
         tmpds_yearly = dsvar.groupby('time.year').mean(dim='time')
         # update time_years and save (lost from the mean)
-        ds_dict['yearly'] = add_decimal_year_coord(tmpds_yearly, roundtime_to=roundtime_to, native_timecoord_name='year')
+        if not start_at_zero:
+            tmpds_yearly2 = add_decimal_year_coord(tmpds_yearly, roundtime_to=roundtime_to, native_timecoord_name='year')
+            dt = 0.08333
+            ds_dict['yearly'] = tmpds_yearly2.assign_coords(time_years=tmpds_yearly2['time_years'] + dt)
+        else:
+            ds_dict['yearly'] = add_decimal_year_coord(tmpds_yearly, roundtime_to=roundtime_to, native_timecoord_name='year')
 
     # [ annual ltm ]
     if annual_ltm:
-        ds_dict['yearly_ltm'] = dsvar.groupby('time.year').mean(dim='time').mean(dim='year')
-
+        tmpds_yearly_ltm = dsvar.groupby('time.year').mean(dim='time').mean(dim='year')
+        # add time_year with monthly resolution (just the annual mean repeated each month)
+        ds_dict['yearly_ltm'] = tmpds_yearly_ltm.expand_dims(time_years = list(np.linspace(0.08333,1,12)))
+    
     return ds_dict 
 
 
 # %% 
 # ---- [ FUNCTION TO WRITE OUTPUT FILE GIVEN ARRAYS ]
 def write_output(outdir, var, arrvar, arrtime):
-    file_path = os.path.join(outdir, var.filename)
+    # file_path = os.path.join(outdir, var.filename)
+    # detect if writing to s3 or local
+    if outdir.startswith("s3://"):
+        import s3fs
+        fs = s3fs.S3FileSystem()
+        file_path = f"{outdir.rstrip('/')}/{var.filename}"
+        f = fs.open(file_path, "w")
+    else:
+        os.makedirs(outdir, exist_ok=True)
+        file_path = os.path.join(outdir, var.filename)
+        f = open(file_path, "w")
+
     # open the file in write mode
-    with open(file_path, "w") as file:
+    with f as file:
         # write header
         h1 = "# " + var.colname_time
         h2 = var.colname_var
@@ -382,8 +447,13 @@ def save_clim_plot(
     ax3.set_ylabel(df3.columns[1])
 
     # save figure 
-    plt.savefig(os.path.join(savehere, savename), dpi=300)
-
+    if savehere.startswith("s3://"):
+        import s3fs
+        fs = s3fs.S3FileSystem()
+        with fs.open(os.path.join(savehere, savename), "wb") as f:
+            plt.savefig(f, dpi=300, format="png")  # specify format since using file handle
+    else:
+        plt.savefig(os.path.join(savehere, savename), dpi=300)
     plt.close();
 
 
@@ -394,6 +464,7 @@ def save_all_case_climfiles_as_txt(
     inputvar_details_fn: str,
     save_clim_fig: bool=True,
     subdir_rule: str="combined",
+    ltm_repeat: bool=False,
 ):
     '''
     Save SCEPTER climate files for a series of cases, looping over 
@@ -420,6 +491,10 @@ def save_all_case_climfiles_as_txt(
     subdir_rule : str
         [separate | combined] separate means the subdirs are split 
         (`save_maindir/sitename/key`) combined gets you: (`save_maindir/sitename_key`)
+    ltm_repeat : bool
+        [True | False] if True, then repeat the ltm data for however many years of input 
+        data we use (then multiplied by `nyears_repeat`). 
+        If False, then repeat the ltm data once (then multiplied by `nyears_repeat`).
     
     Returns
     -------
@@ -454,13 +529,13 @@ def save_all_case_climfiles_as_txt(
                     thisvar = Var(*line.strip().split(","))
 
                     # [ make arrays ]
-                    if key == "yearly_ltm":
-                        arrtime = np.array([0])
-                    else:
-                        arrtime = tmpds_site.time_years.values
+                    # if key == "yearly_ltm":
+                    #     arrtime = np.array([0])
+                    # else:
+                    arrtime = tmpds_site.time_years.values
                     arrvar = tmpds_site[thisvar.varname].values
                     # repeat arrays if `ltm`
-                    if '_ltm' in key:
+                    if (ltm_repeat) and ('_ltm' in key):
                         arrtime = np.concatenate([arrtime + i for i in range(nyears_data)])
                         arrvar = np.tile(arrvar, nyears_data)
 

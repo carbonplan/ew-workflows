@@ -22,6 +22,7 @@ import shutil
 import subprocess
 import time 
 
+import fsspec
 import numpy as np
 import pandas as pd
 import yaml
@@ -259,6 +260,8 @@ def checkrow_for_rerun(
     check_results_fn: str = "check_results.res",
     check_logs_fn: str = "check_logs.res",
     stale_threshold_minutes: float = 15,
+    skip_duration_check: bool = False,
+    retry_once: bool=False,
 ) -> bool:
     '''
     Check the results for a given row in the batch dataFrame to see
@@ -292,6 +295,10 @@ def checkrow_for_rerun(
     stale_threshold_minutes : float
         [minutes] since the last file update in the localdir/flx directory before 
         we deem the run stale
+    skip_duration_check : bool
+        True if we want to skip the duration check (used for multi year simulations)
+    retry_once : bool
+        True if we only want to retry runs once, rather than iteratively
     
     Returns
     -------
@@ -301,7 +308,7 @@ def checkrow_for_rerun(
     '''
     # decide where to look for the output 
     output_found = False
-    rerun_case = False   # update later if it fails a check
+    rerun_case = False    # update later if it fails a check
     delay_case = False    # update later if completed file doesn't exist
     delete_case = False   # update later if it's a local dir case that needs a rerun
     localdir = os.path.join(pars['model-dir'], "scepter_output", row['newrun_id_field_full'])
@@ -326,7 +333,10 @@ def checkrow_for_rerun(
             # check the results file 
             if fs.exists(os.path.join(awsdir, check_results_fn)):
                 check_res_dict = check_results_read(os.path.join(awsdir, check_results_fn), file_on_s3=True)
-                check_res_check = all(check_res_dict.values())
+                if not skip_duration_check: 
+                    check_res_check = all(check_res_dict.values()) # account for all checks
+                else:
+                    check_res_check = all(list(check_res_dict.values())[0:4]) # ignore the duration check
             else:
                 rerun_case = True
             # check the log file
@@ -335,8 +345,12 @@ def checkrow_for_rerun(
             #  equivalent to the spinup. So we manually repeat the check here)
             if fs.exists(os.path.join(awsdir, check_logs_fn)):
                 check_log_dict = check_logs_read(os.path.join(awsdir, check_logs_fn), file_on_s3=True)
-                duration_offset_frac = abs((row['duration'] - check_log_dict['model']) / row['duration'])
-                check_dur_check = bool(duration_offset_frac < duration_threshold_frac)
+                if not skip_duration_check:
+                    duration_offset_frac = abs((row['duration'] - check_log_dict['model']) / row['duration'])
+                    check_dur_check = bool(duration_offset_frac < duration_threshold_frac)
+                else:
+                    check_dur_check = True
+
             else:
                 rerun_case = True
 
@@ -367,7 +381,10 @@ def checkrow_for_rerun(
             # check the results file 
             if os.path.isfile(os.path.join(localdir, check_results_fn)):
                 check_res_dict = check_results_read(os.path.join(localdir, check_results_fn), file_on_s3=False)
-                check_res_check = all(check_res_dict.values())
+                if not skip_duration_check: 
+                    check_res_check = all(check_res_dict.values())  # account for all checks
+                else:
+                    check_res_check = all(list(check_res_dict.values())[0:4]) # ignore the duration check
             else:
                 rerun_case = True
             # check the log file
@@ -376,8 +393,11 @@ def checkrow_for_rerun(
             #  equivalent to the spinup. So we manually repeat the check here)
             if os.path.isfile(os.path.join(localdir, check_logs_fn)):
                 check_log_dict = check_logs_read(os.path.join(localdir, check_logs_fn), file_on_s3=False)
-                duration_offset_frac = abs((row['duration'] - check_log_dict['model']) / row['duration'])
-                check_dur_check = bool(duration_offset_frac < duration_threshold_frac)
+                if not skip_duration_check:
+                    duration_offset_frac = abs((row['duration'] - check_log_dict['model']) / row['duration'])
+                    check_dur_check = bool(duration_offset_frac < duration_threshold_frac)
+                else:
+                    check_dur_check = True
             else:
                 rerun_case = True
 
@@ -408,6 +428,8 @@ def allrows_rerun_check(
     check_logs_fn: str = "check_logs.res",
     duration_threshold_frac: str = 0.2,
     stale_threshold_minutes: float = 15,
+    skip_duration_check: bool=False,
+    retry_once:bool = False,
 ) -> pd.DataFrame:
     '''
     Check all rows in the batch dataframe for whether we need to rerun 
@@ -433,6 +455,11 @@ def allrows_rerun_check(
     stale_threshold_minutes : float
         [minutes] since the last file update in the localdir/flx directory before 
         we deem the run stale
+    skip_duration_check : bool
+        True if we skip the model duration check (used for multi_year simulations)
+    retry_once : bool
+        True if we don't want to retry the runs iteratively (e.g., ignores 
+        stale_threshold_minutes)
     
     Returns
     -------
@@ -453,6 +480,9 @@ def allrows_rerun_check(
             completed_fn = completed_fn, 
             check_results_fn = check_results_fn,
             check_logs_fn = check_logs_fn,
+            stale_threshold_minutes = stale_threshold_minutes,
+            skip_duration_check = skip_duration_check,
+            retry_once = retry_once
         )
 
         rerun_me.append(rerun_result)
@@ -524,7 +554,7 @@ def allrows_rerun_check(
 # )
 #
 
-def retry_failed_runs(
+def retry_failed_runs_iteratively(
     max_reruns: int,
     max_delays: int, 
     rerun_delay: float,
@@ -540,6 +570,7 @@ def retry_failed_runs(
     bleed_delay_runmultiple: int = 15,
     stale_threshold_minutes : float = 20,
     skip_initial_delay: bool=False,
+    skip_duration_check: bool=False
 ):
     '''
     Retry failed simulations. Checks for which simulations failed versus which are still running.
@@ -563,7 +594,7 @@ def retry_failed_runs(
         into a composite), necessary to know for crafting the full run IDs. 
         False means it's a standard simulation, not a composite.
     maindir : str
-        location of the inputs directory (usually '/my/path/to/aglime-swap-cdr')
+        location of the inputs directory (usually '/my/path/to/ew-workflows')
     parameter_yaml_subdir : str
         location of the parameter_yaml file
     completed_fn : str
@@ -586,6 +617,10 @@ def retry_failed_runs(
         True means we skip the initial rerun_delay. Useful if the runs are done and 
         we are doing this cleanup step after the fact. False (default) keeps the 
         initial delay
+    skip_duration_check : bool
+        True means we skip the check that the model run time matches the intended
+        duration. Used primarily for multi_year runs where we haven't built that 
+        functionality yet.
 
     Returns
     -------
@@ -623,6 +658,7 @@ def retry_failed_runs(
         check_logs_fn  = check_logs_fn,
         duration_threshold_frac = duration_threshold_frac,
         stale_threshold_minutes = stale_threshold_minutes,
+        skip_duration_check = skip_duration_check
     )
     # 
     # (Note: don't reset the index for the df_batch_*... the run_multiple function only works
@@ -685,6 +721,7 @@ def retry_failed_runs(
                 check_logs_fn  = "check_logs.res",
                 duration_threshold_frac = 0.2,
                 stale_threshold_minutes = stale_threshold_minutes,
+                skip_duration_check = skip_duration_check
             )
 
             # check which simulations to run again
@@ -701,7 +738,126 @@ def retry_failed_runs(
 
 
 
+def retry_failed_runs_once(
+    parameter_yaml: str,
+    multiyear: bool,
+    maindir: str="/home/tykukla/ew-workflows",
+    parameter_yaml_subdir: str="inputs/scepter/params",
+    completed_fn: str = "completed.res",
+    check_results_fn: str  = "check_results.res",
+    check_logs_fn: str  = "check_logs.res",
+    duration_threshold_frac: float = 0.2,
+    workflow_name_runmultiple: str = "scepter-pyworkflow.yaml",
+    bleed_delay_runmultiple: int = 15,
+    skip_duration_check: bool=False
+):
+    '''
+    This is a (generally more reliable) retry function for when you know that all 
+    the runs in your batch are no longer running. It determines if it needs to 
+    rerun something primarily by looking at whether the output directory made it 
+    to aws, and then checking for the standard checks. 
 
+    It will only try to rerun a failed run once, rather than iteratively rerun 
+    it if it continues to go incomplete. 
 
+    parameter_yaml : str
+        name of the parameter file for this batch. Something like
+        "batch_pars.yaml". 
+    multiyear : bool
+        True means it's a multiyear simulation (e.g., multiple iters stitched
+        into a composite), necessary to know for crafting the full run IDs. 
+        False means it's a standard simulation, not a composite.
+    maindir : str
+        location of the inputs directory (usually '/my/path/to/ew-workflows')
+    parameter_yaml_subdir : str
+        location of the parameter_yaml file
+    completed_fn : str
+        name of the completed.res file 
+    check_results_fn : str
+        name of the check_results file 
+    check_logs_fn : str
+        name of the check_logs file 
+    duration_threshold_frac : float
+        The absolute fractional difference allowed between the target duration of 
+        the simulation and the actual duration. 
+    workflow_name_runmultiple : str
+        name of the argo workflow .yaml file for the run_multiple function
+    bleed_delay_runmultiple : int
+        [seconds] delay between each argo submit command for the run_multiple function
+    skip_duration_check : bool
+        True means we skip the check that the model run time matches the intended
+        duration. Used primarily for multi_year runs where we haven't built that 
+        functionality yet.
+
+    Returns
+    -------
+
+    '''
+    # --- read in the parameter file
+    # create parameter file path
+    parameterfile = os.path.join(maindir, parameter_yaml_subdir, parameter_yaml)
+    # check system arguments, or set default
+    with open(parameterfile, "r") as file:
+        pars = yaml.safe_load(file)
+
+    # --- read in the batch.csv file
+    df_batch = pd.read_csv(os.path.join(pars['batch-input-dir'], pars['batch-input']))
+
+    # --- add column for full run ID
+    if multiyear:
+        df_batch["newrun_id_field_full"] = df_batch['newrun_id'] + f"_composite_field"
+        df_batch["newrun_id_lab_full"] = df_batch['newrun_id'] + f"_composite_lab"
+    else:
+        df_batch["newrun_id_field_full"] = df_batch['newrun_id'] + "_" + df_batch['dustsp'] + "_field_tau"+df_batch["duration"].astype(float).astype(str).str.replace(".", "p")  # (duration has to be turned into float first because otherwise we miss the decimal pt)
+        df_batch["newrun_id_lab_full"] = df_batch['newrun_id'] + "_" + df_batch['dustsp'] + "_lab_tau"+df_batch["duration"].astype(float).astype(str).str.replace(".", "p")  # (duration has to be turned into float first because otherwise we miss the decimal pt)
+
+    df_batch_rerunCheck = allrows_rerun_check(
+        df_batch = df_batch,
+        pars = pars,
+        completed_fn = completed_fn,
+        check_results_fn  = check_results_fn,
+        check_logs_fn  = check_logs_fn,
+        duration_threshold_frac = duration_threshold_frac,
+        stale_threshold_minutes = 0,
+        skip_duration_check = skip_duration_check
+    )
+    # 
+    # (Note: don't reset the index for the df_batch_*... the run_multiple function only works
+    #  in rerun mode if we retain the original index)
+    # 
+    # check which simulations to run again
+    rerun_eligible = df_batch_rerunCheck['rerun_needed'].copy()
+    df_batch_rerunCheck = df_batch_rerunCheck.assign(rerun_eligible = rerun_eligible)
+    df_batch_rerun = df_batch_rerunCheck.loc[df_batch_rerunCheck['rerun_eligible'], :].copy()
+
+    # delete local directories that have problems
+    df_delete_dirs = df_batch_rerun.loc[df_batch_rerun['delete_localCase'], :].copy()
+    scepter_outdir = os.path.join(pars['model-dir'], 'scepter_output')
+    if len(df_delete_dirs) > 0:
+        # print("deleting problem dirs ... ")
+        delete_dirs = list(df_delete_dirs['newrun_id_field_full'].values) + list(df_delete_dirs['newrun_id_lab_full'].values)
+        for ddir in delete_dirs:
+            if os.path.exists(os.path.join(scepter_outdir, ddir)):
+                print(f"deleting {ddir} ... ")
+                shutil.rmtree(os.path.join(scepter_outdir, ddir))
+
+    # --- begin rerun ----------------------------------
+    if len(df_batch_rerun) == 0:
+        print("Found no runs needing a rerun...")
+    else:
+        print(f"attempting rerun iteration for {len(df_batch_rerun)} cases ...")
+
+        # re-run each case 
+        run_multiple(
+            parameter_yaml = parameter_yaml,
+            parameter_yaml_subdir = parameter_yaml_subdir,
+            maindir = maindir, 
+            workflow_name = workflow_name_runmultiple,
+            bleed_delay = bleed_delay_runmultiple,
+            echo_command = True,
+            norun_debug = False,
+            rerun_on = True,     # turn this on because it's a rerun case ! 
+            df_reruns = df_batch_rerun,
+        )
 
 # %% 

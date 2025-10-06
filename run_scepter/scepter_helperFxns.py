@@ -12,9 +12,10 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
-from scipy.integrate import cumulative_trapezoid
 
+import fsspec
 import pandas as pd
+from scipy.integrate import cumulative_trapezoid
 
 # %%
 # --------------------------------------------------------------------------
@@ -148,36 +149,35 @@ def save_dict_to_text_file(dictionary: dict, filename: str, delimiter: str = "\t
 
 def copy_files(src_dir: str, dst_dir: str):
     """
-    Copy all files from a source directory to a destination directory
-    (assumes neither are aws)
+    Copy all files from a source directory to a destination directory.
+    Works for both local paths and s3 paths (via fsspec).
 
     Parameters
     ----------
     src_dir : str
-        location of the source directory (often the spinup run)
-        ('/my/source_dir')
+        Source directory (local or s3://bucket/prefix).
     dst_dir : str
-        location of the destination directory (often the case run)
-        the destination directory must already exist
-        ('/my/dst_dir')
-
-
-    Returns
-    -------
+        Destination directory (local or s3://bucket/prefix).
+        Destination directory must already exist.
     """
-    # directory must exist
-    if not os.path.exists(dst_dir):
-        print("Cannot find " + dst_dir)
+    # get filesystem objects for source and destination
+    src_fs, src_path = fsspec.core.url_to_fs(src_dir)
+    dst_fs, dst_path = fsspec.core.url_to_fs(dst_dir)
 
-    # iterate over source files
-    for filename in os.listdir(src_dir):
-        src_file = os.path.join(src_dir, filename)
-        dst_file = os.path.join(dst_dir, filename)
+    # check destination directory exists
+    if not dst_fs.exists(dst_path):
+        print(f"Cannot find {dst_dir}")
+        return
 
-        # copy them over (skipping any directories)
-        if os.path.isfile(src_file):
-            shutil.copy2(src_file, dst_file)
-            # print(f"Copied {src_file} to {dst_file}")
+    # iterate over files in source directory
+    for file in src_fs.ls(src_path, detail=False):
+        filename = os.path.basename(file)
+        dst_file = dst_fs.sep.join([dst_path, filename])
+
+        # open source and destination and copy contents
+        with src_fs.open(file, "rb") as fsrc, dst_fs.open(dst_file, "wb") as fdst:
+            shutil.copyfileobj(fsrc, fdst)
+            # print(f"Copied {file} to {dst_file}")
 
 
 def generate_timesteps(total_duration: float, timestep: float) -> list:

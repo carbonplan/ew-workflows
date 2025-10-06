@@ -22,6 +22,7 @@ import shutil
 import subprocess
 import time 
 
+import fsspec
 import numpy as np
 import pandas as pd
 import yaml

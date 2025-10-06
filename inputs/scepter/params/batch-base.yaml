@@ -1,0 +1,6 @@
+control-script: singlerun.py
+control-script-dir: /home/tykukla/ew-workflows/scripts/scepter/run/control_scripts/
+batch-input: clim_gbas_timedynamics_hourly_noFert_gs+apprate_v0.csv
+batch-input-dir: s3://carbonplan-carbon-removal/ew-workflows-data/scepter/batch/
+default-dict: singlerun_default  # see SCEPTER/defaults/dict_singlerun.py
+model-dir: /home/tykukla/SCEPTER/
