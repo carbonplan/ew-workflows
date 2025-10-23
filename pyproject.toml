@@ -1,13 +1,24 @@
-
 [project]
-name = "run_scepter"
+name = "ew-workflows"
 readme = "README.md"
+version = "0.1.0"
 
-requires-python = ">=3.09"
-dynamic = ["version"]
+requires-python = ">=3.11"
 dependencies = [
-    "xarray"
+    "coiled>=1.120.0",
+    "distributed>=2024.8.0",
+    "icechunk>=1.1.5",
+    "ipykernel>=6.30.1",
+    "obstore>=0.8.2",
+    "s3fs>=2025.9.0",
+    "toml>=0.10.2",
+    "xarray",
+    "zarr>=2.18.2",
 ] 
+
+[build-system]
+requires = ["uv_build>=0.8.14,<0.9.0"]
+build-backend = "uv_build"
 
 [project.optional-dependencies]
 test = [
@@ -15,25 +26,6 @@ test = [
     "pre-commit",
     "ruff"
 ]
-
-
-
-[build-system]
-requires = [
-    "setuptools>=61.0.0",
-    "wheel",
-    "setuptools_scm[toml]>=7.0",
-    "check-manifest"
-]
-
-[tool.setuptools_scm] 
-fallback_version = "9999"
-
-[tool.setuptools.packages.find]
-exclude = ["docs", "tests", "tests.*", "docs.*"]
-
-[tool.setuptools.package-data]
-datatree = ["py.typed"]
 
 [tool.mypy]
 show_error_codes = true

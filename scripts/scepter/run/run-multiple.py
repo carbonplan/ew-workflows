@@ -17,8 +17,8 @@ import os
 import sys 
 
 # --- read in argo helper functions  
-sys.path.append(os.path.abspath('/home/tykukla/ew-workflows/run_scepter'))
-import argo_helper_fxns as ahf
+# sys.path.append(os.path.abspath('/home/tykukla/ew-workflows/run_scepter'))
+from ew_workflows import argo_helper_fxns as ahf
 # ---
 
 
