@@ -12,10 +12,13 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
+import warnings
 
 import fsspec
 import pandas as pd
+import s3fs
 from scipy.integrate import cumulative_trapezoid
+from typing import Tuple
 
 # %%
 # --------------------------------------------------------------------------
@@ -120,6 +123,73 @@ def set_vars(default_args: dict, system_args: dict) -> dict:
             save_vars[key] = value
             globals()[key] = value
     return save_vars
+
+
+def copy_spinup_if_on_s3(
+        spindir: str, 
+        spinup_field: str, 
+        spinup_lab: str,
+        localdir: str,
+)-> str:
+    """
+    Move spinup results to local so we don't have to read in
+    each file we update individually from s3 later. Returns the 
+    new spindir (a.k.a localdir)
+
+    Parameters
+    ----------  
+    spindir : str
+        Location of the spinup subdirectories on s3
+    spinup_field : str
+        Name of the field run subdirectory
+    spinup_lab : str
+        Name of the lab run subdirectory
+
+    Returns
+    -------
+    Tuple(str, str)
+        Strings for the field spinup directory location, and the field spinup dir location
+    """
+    # --- Safety check
+    if not spindir.startswith("s3://"):
+        return "Spin directory is not s3"
+    
+    # --- Build paths
+    s3_path_field = os.path.join(spindir, spinup_field)
+    s3_path_lab = os.path.join(spindir, spinup_lab)
+    local_target_field = os.path.join(localdir, spinup_field)
+    local_target_lab = os.path.join(localdir, spinup_lab)
+
+    # --- Make sure local target exists
+    os.makedirs(local_target_field, exist_ok=True)
+    os.makedirs(local_target_lab, exist_ok=True)
+
+    # --- Initialize s3fs filesystem
+    fs = s3fs.S3FileSystem(anon=False)
+
+    # --- List all files under s3_path
+    files_field = fs.find(s3_path_field)
+    files_lab = fs.find(s3_path_lab)
+
+    # --- Copy each file
+    # [ FIELD ]
+    print(f"Copying {len(files_field)} files from field spinup to local")
+    for f in files_field:
+        rel_path = os.path.relpath(f, s3_path_field)
+        local_file = os.path.join(local_target_field, rel_path)
+        os.makedirs(os.path.dirname(local_file), exist_ok=True)
+        fs.get(f, local_file)
+    
+    # [ LAB ]
+    print(f"Copying {len(files_lab)} files from lab spinup to local")
+    for f in files_lab:
+        rel_path = os.path.relpath(f, s3_path_lab)
+        local_file = os.path.join(local_target_lab, rel_path)
+        os.makedirs(os.path.dirname(local_file), exist_ok=True)
+        fs.get(f, local_file)
+    
+    # --- return new locations
+    return localdir
 
 
 def save_dict_to_text_file(dictionary: dict, filename: str, delimiter: str = "\t"):
