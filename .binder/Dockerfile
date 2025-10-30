@@ -17,6 +17,12 @@ RUN apt-get update \
         libopenblas-dev \
     && export LD_LIBRARY_PATH=/usr/lib/openblas-base/
 
+# install s5cmd (latest release from GitHub)
+RUN wget -q https://github.com/peak/s5cmd/releases/latest/download/s5cmd_Linux-64bit.tar.gz \
+    && tar -xzf s5cmd_Linux-64bit.tar.gz -C /usr/local/bin s5cmd \
+    && rm s5cmd_Linux-64bit.tar.gz \
+    && chmod +x /usr/local/bin/s5cmd
+
 # Clone SCEPTER 
 # (first switch user, required for quay.io/pangeo/pangeo-notebook)
 USER jovyan    
