@@ -18,7 +18,8 @@ RUN apt-get update \
     && export LD_LIBRARY_PATH=/usr/lib/openblas-base/
 
 # install s5cmd (latest release from GitHub)
-RUN wget -q https://github.com/peak/s5cmd/releases/latest/download/s5cmd_Linux-64bit.tar.gz \
+RUN S5CMD_VERSION=2.3.0 \
+    && wget -q https://github.com/peak/s5cmd/releases/download/v{S5CMD_VERSION}/s5cmd_{S5CMD_VERSION}_Linux-64bit.tar.gz \
     && tar -xzf s5cmd_Linux-64bit.tar.gz -C /usr/local/bin s5cmd \
     && rm s5cmd_Linux-64bit.tar.gz \
     && chmod +x /usr/local/bin/s5cmd
