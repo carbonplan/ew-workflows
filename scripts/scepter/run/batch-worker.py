@@ -30,7 +30,7 @@ def main():
     # Collect a dict of values (strings)
     result = {k: os.environ.get(k) for k in keys}
     # Add a timestamp
-    result["_task_started_at"] = datetime.now(timezone.utc).isoformat()
+    result["task_started_at"] = datetime.now(timezone.utc).isoformat()
 
 
     # -------------------------------------------------------
@@ -41,7 +41,8 @@ def main():
         args = ["python3", script_path]
         args += static_inputs if static_inputs else []
         for k, v in results.items():
-            flag = f"--{k.replace('_', '-') }"  # transform underscores to hyphens if you like
+            # flag = f"--{k.replace('_', '-') }"  # transform underscores to hyphens if you like
+            flag = f"--{k }"
             if v is True:
                 # boolean True -> flag only
                 args.append(flag)
@@ -70,10 +71,10 @@ def main():
     # log model-dir existence
     if model_dir:
         path_exists = os.path.exists(model_dir)
-        result["_model_dir_exists"] = path_exists
+        result["model_dir_exists"] = path_exists
         print(f"model-dir: {model_dir}, exists: {path_exists}", flush=True)
     else:
-        result["_model_dir_exists"] = "model-dir env var not set" 
+        result["model_dir_exists"] = "model-dir env var not set" 
         print("model-dir env var not set", flush=True)
     # Only attempt to build and run the command if we have a run_script and model_dir
     if run_script and model_dir:
