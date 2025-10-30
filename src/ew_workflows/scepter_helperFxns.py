@@ -179,7 +179,9 @@ def copy_spinup_if_on_s3(
         local_file = os.path.join(local_target_field, rel_path)
         os.makedirs(os.path.dirname(local_file), exist_ok=True)
         fs.get(f, local_file)
-        print(f" --- Copying {f} to {local_file}")
+        # --- TROUBLESHOOT --------------------------
+        # print(f" --- Copying {f} to {local_file}")
+        # -------------------------------------------
     
     # [ LAB ]
     print(f"Copying {len(files_lab)} files from lab spinup to local")
@@ -1003,7 +1005,7 @@ def to_aws(
         nruns = len(runname_field)  # get the total number of runs to loop through
 
     # --- TROUBLESHOOT ----
-    print(f"aws_save: {aws_save}")
+    # print(f"aws_save: {aws_save}")
     # ---------------------
         
     # loop through runs
@@ -1022,7 +1024,7 @@ def to_aws(
 
             if aws_save == "move":
                 # --- TROUBLESHOOT ----
-                print(f"Trying to move {src} to {dst_aws}")
+                # print(f"Trying to move {src} to {dst_aws}")
                 # ---------------------
                 cmd_run = "s5cmd mv " + src + " " + dst_aws
                 # result1 = subprocess.run(cmd_activate, shell=True, check=True)
@@ -1041,7 +1043,7 @@ def to_aws(
 
             elif aws_save == "copy":
                 # --- TROUBLESHOOT ----
-                print(f"Trying to copy {src} to {dst_aws}")
+                # print(f"Trying to copy {src} to {dst_aws}")
                 # ---------------------
                 cmd_run = "s5cmd cp " + src + " " + dst_aws
                 # result1 = subprocess.run(cmd_activate, shell=True, check=True)
@@ -1081,7 +1083,7 @@ def aws_copy_to_local(
     -------
     """
     # command to activate virtuan env with s5cmd
-    cmd_activate = "conda run -n cdr-scepter1p0_env"
+    # cmd_activate = "conda run -n cdr-scepter1p0_env"
 
     # loop through source dirs
     for src in aws_src:
@@ -1089,7 +1091,7 @@ def aws_copy_to_local(
         dst_tmp = os.path.join(outdir, src)
         cmd_run = "s5cmd cp " + src_tmp + " " + dst_tmp
         # run the commands
-        result1 = subprocess.run(cmd_activate, shell=True, check=True)
+        # result1 = subprocess.run(cmd_activate, shell=True, check=True)
         result2 = subprocess.run(cmd_run, shell=True, check=True)
 
 
