@@ -175,7 +175,7 @@ def copy_spinup_if_on_s3(
     # [ FIELD ]
     print(f"Copying {len(files_field)} files from {s3_path_field} to {local_target_field}")
     for f in files_field:
-        rel_path = os.path.relpath(f, start=s3_path_field.rstrip('/'))  # remove the s3_path prefix
+        rel_path = os.path.relpath(f, s3_path_field.removeprefix("s3://"))   # remove the s3_path prefix
         local_file = os.path.join(local_target_field, rel_path)
         os.makedirs(os.path.dirname(local_file), exist_ok=True)
         fs.get(f, local_file)
@@ -184,7 +184,7 @@ def copy_spinup_if_on_s3(
     # [ LAB ]
     print(f"Copying {len(files_lab)} files from lab spinup to local")
     for f in files_lab:
-        rel_path = os.path.relpath(f, start=s3_path_field.rstrip('/'))  # remove the s3_path prefix
+        rel_path = os.path.relpath(f, s3_path_field.removeprefix("s3://"))   # remove the s3_path prefix
         local_file = os.path.join(local_target_lab, rel_path)
         os.makedirs(os.path.dirname(local_file), exist_ok=True)
         fs.get(f, local_file)
