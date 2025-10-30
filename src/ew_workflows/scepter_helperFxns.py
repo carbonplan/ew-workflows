@@ -173,7 +173,7 @@ def copy_spinup_if_on_s3(
 
     # --- Copy each file
     # [ FIELD ]
-    print(f"Copying {len(files_field)} files from field spinup to local")
+    print(f"Copying {len(files_field)} files from {s3_path_field} to {local_target_field}")
     for f in files_field:
         rel_path = f[len(s3_path_field):].lstrip('/')  # remove the s3_path prefix
         local_file = os.path.join(local_target_field, rel_path)
