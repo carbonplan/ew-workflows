@@ -1002,7 +1002,10 @@ def to_aws(
     else:
         nruns = len(runname_field)  # get the total number of runs to loop through
 
-    
+    # --- TROUBLESHOOT ----
+    print(f"aws_save: {aws_save}")
+    # ---------------------
+        
     # loop through runs
     for rundx in range(nruns):
         tmp_runname_field = runname_field[rundx]
@@ -1012,14 +1015,17 @@ def to_aws(
         for runname in [tmp_runname_field, tmp_runname_lab]:
             src = os.path.join(outdir, runname)
             dst_aws = os.path.join(aws_bucket)
-            cmd_activate = "conda run -n cdr-scepter1p0_env"  # activate the virtual environment that has s5cmd
+            # cmd_activate = "conda run -n cdr-scepter1p0_env"  # activate the virtual environment that has s5cmd
             # check if the destination directory exists and remove it if it does
             # if os.path.exists(dst_aws):
             #     shutil.rmtree(dst_aws)
 
             if aws_save == "move":
+                # --- TROUBLESHOOT ----
+                print(f"Trying to move {src} to {dst_aws}")
+                # ---------------------
                 cmd_run = "s5cmd mv " + src + " " + dst_aws
-                result1 = subprocess.run(cmd_activate, shell=True, check=True)
+                # result1 = subprocess.run(cmd_activate, shell=True, check=True)
                 result2 = subprocess.run(cmd_run, shell=True, check=True)
                 outdir_final = dst_aws
                 # ... remove empty sub directories
@@ -1034,8 +1040,11 @@ def to_aws(
                     os.rmdir(src)
 
             elif aws_save == "copy":
+                # --- TROUBLESHOOT ----
+                print(f"Trying to copy {src} to {dst_aws}")
+                # ---------------------
                 cmd_run = "s5cmd cp " + src + " " + dst_aws
-                result1 = subprocess.run(cmd_activate, shell=True, check=True)
+                # result1 = subprocess.run(cmd_activate, shell=True, check=True)
                 result2 = subprocess.run(cmd_run, shell=True, check=True)
                 outdir_final = dst_aws
             else:
