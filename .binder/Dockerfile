@@ -20,7 +20,7 @@ RUN apt-get update \
 # install s5cmd (latest release from GitHub)
 RUN S5CMD_VERSION=2.3.0 \
     && wget -q https://github.com/peak/s5cmd/releases/download/v${S5CMD_VERSION}/s5cmd_${S5CMD_VERSION}_Linux-64bit.tar.gz \
-    && tar -xzf ss5cmd_${S5CMD_VERSION}_Linux-64bit.tar.gz -C /usr/local/bin s5cmd \
+    && tar -xzf s5cmd_${S5CMD_VERSION}_Linux-64bit.tar.gz -C /usr/local/bin s5cmd \
     && rm s5cmd_${S5CMD_VERSION}_Linux-64bit.tar.gz \
     && chmod +x /usr/local/bin/s5cmd
 
