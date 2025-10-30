@@ -1670,9 +1670,22 @@ def prof_postproc_save(
         else:
             ds = profile_to_ds_optMean(outdir, runname_field, **postproc_prof_dict[pp], multi_iter=multi_iter)
         
+        # --- sanitize variable and dimension names for NetCDF
+        #     namely, remove any forward slashes which cause errors (esp in variable `v[m/yr]`)
+        safe_ds = ds.rename({
+            name: name.replace('/', '_per_')
+            for name in ds.variables
+            if '/' in name
+        })
+        safe_ds = safe_ds.rename_dims({
+            dim: dim.replace('/', '_per_')
+            for dim in safe_ds.dims
+            if '/' in dim
+        })
+
         # --- save 
         savename = f"{pp}.nc"
-        ds.to_netcdf(os.path.join(savehere, savename))
+        safe_ds.to_netcdf(os.path.join(savehere, savename))
         
 
 
