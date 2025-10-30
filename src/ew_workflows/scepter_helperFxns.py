@@ -179,6 +179,7 @@ def copy_spinup_if_on_s3(
         local_file = os.path.join(local_target_field, rel_path)
         os.makedirs(os.path.dirname(local_file), exist_ok=True)
         fs.get(f, local_file)
+        print(f" --- Copying {f} to {local_file}")
     
     # [ LAB ]
     print(f"Copying {len(files_lab)} files from lab spinup to local")
