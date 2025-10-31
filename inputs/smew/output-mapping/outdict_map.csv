@@ -1,0 +1,100 @@
+short_name,long_name,units,dims,save,sometimes_absent,is_dim
+L,water export out of column,m d-1,time,Y,N,N
+T,transpiration,m d-1,time,Y,N,N
+I,water infiltration (P minus surface runoff),m,time,Y,N,N
+v,plant biomass,g m-2,time,Y,N,N
+k_v,plant biomass carrying capacity,g m-2,[],Y,N,N
+RAI,root area index,m2 m-2,[],Y,N,N
+root_d,average root diameter,m,[],Y,N,N
+r_het,heterotrophic respiration rate,umol m-2 d-1,time,Y,N,N
+r_aut,autotrophic respiration rate,umol m-2 d-1,time,Y,N,N
+D,diffusive flux of CO2,??,time,Y,N,N
+temp_soil,temperature of the soil,deg C,time,Y,N,N
+mineral,minerals in feedstock added to soil (array),unitless,mineral,Y,N,Y
+rock_f_in,mineral weight fraction in feedstock (order of values corresponds with `mineral`),unitless,mineral,Y,N,N
+d_in,grain diameter classes (order of values corresponds with `mineral`),m,mineral,Y,N,N
+psd_perc_in,"particle ""sediment diameter"" weight (order of values corresponds with `mineral`)",unitless,mineral,Y,N,N
+SSA_in,initial specific surface area classes (order of values corresponds with `mineral`),m2 g-1,mineral,Y,N,N
+diss_f,dissolution factor (tunable parameter),unitless,[],Y,N,N
+dt,time resolution ,d,[],Y,N,N
+keyword_add,"switch: 1=balance background cation+anion losses with inputs (e.g., from rain, litterfall, background wx, etc); 0=no addition",unitless,[],Y,N,N
+pH,soil water pH,unitless,time,Y,N,N
+UP_Ca,active plant uptake of Ca during growth,umol d-1,time,Y,N,N
+Omega_CaCO3,saturation state with respect to calcium carbonate,unitless,time,Y,N,N
+CaCO3,mass of calcium carbonate in soil,umol,time,Y,N,N
+W_CaCO3,cation release flux from non-feedstock calcium carbonate dissolution (positive=dissolution; negative=precipitation),umol m-2 d-1,time,Y,N,N
+UP_Mg,active plant uptake of Mg during growth,umol d-1,time,Y,N,N
+Omega_MgCO3,saturation state with respect to magnesium carbonate,unitless,time,Y,N,N
+MgCO3,mass of magnesium carbonate in soil,umol,time,Y,N,N
+W_MgCO3,cation release flux from non-feedstock magnesium carbonate dissolution (positive=dissolution; negative=precipitation),umol m-2 d-1,time,Y,N,N
+UP_K,active plant uptake of K during growth,umol d-1,time,Y,N,N
+Si,silicon concentration in soil water,umol L-1,time,Y,N,N
+Si_tot,"silicon mass balance (aqueous only, no sorbed silicon)",mol,time,Y,N,N
+UP_Si,active plant uptake of Si during growth,umol d-1,time,Y,N,N
+An,conservative anion concentration in water,umol L-1,time,Y,N,N
+An_tot,"conservative anion mass balance (aqueous only, no sorbed anions)",mol_c,time,Y,N,N
+CO2_air,concentration of CO2 in soil air,ppmv???,time,Y,N,N
+HCO3,concentration of HCO3- in soil water,mol L-1,time,Y,N,N
+CO3,concentration of CO3-- in soil water,mol L-1,time,Y,N,N
+DIC,concentration of total dissolved inorganic carbon in soil water,mol L-1,time,Y,N,N
+Fs,diffusive flux of CO2 out top of soil column,mol d-1,time,Y,N,N
+ADV,advective flux(??) of CO2 ,mol,time,Y,N,N
+DIC_rain,dissolved inorganic carbon concentration of infiltrating water,mol L-1,time,Y,N,N
+AlOH,concentration of AlOH++ in soil water,mol L-1,time,Y,N,N
+AlOH2,concentration of AlOH2+ in soil water,mol L-1,time,Y,N,N
+AlOH3,concentration of AlOH3 in soil water,mol L-1,time,Y,N,N
+AlOH4,concentration of AlOH4- in soil water,mol L-1,time,Y,N,N
+M_rock,"mass of feedstock in soil column (total feedstock, not mineral-specific; for mineral-specific mass see `M_min`)",g m-2,time,Y,N,N
+SA,"feedstock surface area (total feedstock, not mineral specific)",m2,time,Y,N,N
+EW,"??? Paper suggests this is the cation release flux due to feedstock weathering, but code indicates that EW has shape [n_minerals, t], not [n_cations, t]??",mol d-1,"mineral, time",Y,N,N
+d,"grain diameter evolution (shape [n_minerals, time])",m,"mineral, time",Y,N,N
+delta_d,??? Not totally sure what this is — in my test run it's identical to `d`,???,"mineral, time",Y,N,N
+lamb,"??? Is this the roughness factor? (shape [n_mineral, time])",unitless,"mineral, time",Y,N,N
+SSA,"specific surface area (shape [n_mineral, time])",m2 g-1,"mineral, time",Y,N,N
+psd,"particle sediment diameter (not size distribution) (shape[n_mineral, time])",g m-1,"mineral, time",Y,N,N
+number_min,number of minerals represented in feedstock (should be `len(mineral)`),unitless,[],Y,Y,N
+MM_min,molar mass of mineral (shape[n_mineral]),g mol-1,mineral,Y,Y,N
+k_diss_H_t,"reaction rate for acid mechanism (shape[n_mineral, time])",umol m-2 d-1,"mineral, time",Y,Y,N
+k_diss_w_t,"reaction rate for water mechanism (shape[n_mineral, time])",umol m-2 d-1,"mineral, time",Y,Y,N
+k_diss_OH_t,"reaction rate for OH mechanism (shape[n_mineral, time])",umol m-2 d-1,"mineral, time",Y,Y,N
+Omega,"saturation state with respect to feedstock mineral (shape[n_mineral, time])",unitless,"mineral, time",Y,Y,N
+M_min,"mass of feedstock mineral in soil column (shape[n_mineral, time]; for full feedstock mass see `M_rock`)",g m-2,"mineral, time",Y,Y,N
+rock_f,"mineral weight fraction in feedstock (shape[n_mineral, time])",unitless,"mineral, time",Y,Y,N
+Wr,"mineral-specific weathering-rate (shape[n_mineral, time])",umol m-2 d-1,"mineral, time",Y,Y,N
+CO2_atm,atmospheric CO2 concentration (single value),mol L-1 air,[],Y,N,N
+I_An,"background input rate of conservative anions (e.g., through rain, litterfall, background weathering, etc)",mol_c d-1,[],Y,N,N
+I_Ca,"background input rate of Ca2+ (e.g., through rain, litterfall, background weathering, etc)",mol d-1,[],Y,N,N
+I_Mg,"background input rate of Mg2+ (e.g., through rain, litterfall, background weathering, etc) (constant)",mol d-1,[],Y,N,N
+I_Na,"background input rate of Na+ (e.g., through rain, litterfall, background weathering, etc) (constant)",mol d-1,[],Y,N,N
+I_K,"background input rate of K+ (e.g., through rain, litterfall, background weathering, etc) (constant)",mol d-1,[],Y,N,N
+I_Si,"background input rate of Si (e.g., through rain, litterfall, background weathering, etc) (constant)",mol d-1,[],Y,N,N
+Al,aluminum concentration in soil water,umol L-1,time,Y,N,N
+Al_tot,aluminum mass balance (aqueous + sorbed),mol,time,Y,N,N
+Al_w,??? aluminum mass balance in mobile phase,mol,time,Y,N,N
+Alk,alkalinity concentration in soil water,umol L-1,time,Y,N,N
+Alk_tot,alkalinity mass balance (aqueous + sorbed),mol_c,time,Y,N,N
+CEC_tot,cation exchange capacity in soil column (constant),mol_c,[],Y,N,N
+CO2_w,concentration of dissolved CO2 in soil water,mol L-1,time,Y,N,N
+CO2_w_rain,concentration of dissolved CO2 in rain water,mol L-1,time,Y,N,N
+Ca,concentration of calcium in soil water ,mol L-1,time,Y,N,N
+Ca_tot,calcium mass balance in soil water (aqueous + sorbed),mol,time,Y,N,N
+H,concentration of hydrogen ions in soil water,mol L-1,time,Y,N,N
+H_rain,concentration of hydrogen ions in rain water,mol L-1,time,Y,N,N
+IC_tot,inorganic carbon mass balance,mol,time,Y,N,N
+K,concentration of potassium in soil water,mol L-1,time,Y,N,N
+K_tot,potassium mass balance (aqueous + sorbed),mol,time,Y,N,N
+Mg,concentration of magnesium in soil water,mol L-1,time,Y,N,N
+Mg_tot,magnesium mass balance (aqueous + sorbed),mol,time,Y,N,N
+Na,concentration of sodium in soil water,mol L-1,time,Y,N,N
+Na_tot,sodium mass balance (aqueous + sorbed),mol,time,Y,N,N
+R_alk,reserve (sorbed) alkalinity (sum of sorbed cation fractions multiplied by CEC_tot),mol_c,time,Y,N,N
+Zr,soil column depth (constant),m,[],Y,N,N
+f_Ca,fraction of exchange sites occupied by calcium,unitless,time,Y,N,N
+f_Al,fraction of exchange sites occupied by aluminum,unitless,time,Y,N,N
+f_H,fraction of exchange sites occupied by hydrogen ions,unitless,time,Y,N,N
+f_K,fraction of exchange sites occupied by potassium,unitless,time,Y,N,N
+f_Mg,fraction of exchange sites occupied by magnesium,unitless,time,Y,N,N
+f_Na,fraction of exchange sites occupied by sodium,unitless,time,Y,N,N
+n,soil porosity (constant),unitless,[],Y,N,N
+s,soil moisture,m3 m-3,time,Y,N,N
+time,time,d,time,Y,N,Y
