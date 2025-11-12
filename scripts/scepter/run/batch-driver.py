@@ -115,3 +115,5 @@ else:
     )
     print("Submit result:", res)
 
+    coiled.batch.status()
+# %%

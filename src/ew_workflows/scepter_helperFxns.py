@@ -7,14 +7,17 @@
 #
 # ----------------------------------------------------
 # %%
+import math
 import os
 from pathlib import Path
 import re
 import shutil
 import subprocess
+from typing import Optional, List
 import warnings
 
 import fsspec
+import numpy as np
 import pandas as pd
 import s3fs
 from scipy.integrate import cumulative_trapezoid
@@ -498,6 +501,262 @@ def check_scepter_exec(
         print(f"Copied {scepter_exec_name} from {modeldir} to {rundir}.")
     else:
         print(f"{scepter_exec_name} already exists and is executable in {rundir}.")
+
+
+
+def create_dust_input(
+    outdir: str,
+    runname: str,
+    dustname1: Optional[str] = None,
+    dustname2: Optional[str] = None,
+    t_add: float = 0.25,
+    output_filename: str  = "Dust_temp.in",
+    dryrun: bool = False,
+) -> str:
+    """
+    Create a tab-delimited dust input file for the model.
+
+    - Reads time grid from: <outdir>/<runname>/q_temp.in
+      (expects whitespace-separated file, time in first column, units = years).
+    - Reads dust amounts and 'duration of dust application [yr]' from:
+      <outdir>/<runname>/frame.in.  It looks for lines containing the labels:
+        'amounts of dusts' -> amount for dust1 (g/m2/yr)
+        'amounts of 2nd dusts' -> amount for dust2 (g/m2/yr)
+        'duration of dust application' -> minimum spread duration in years (e.g. 0.05)
+    - t_add: fractional time into each year when the dust is applied (0.0 - 1.0)
+    - The function outputs rates (g/m2/yr) for each time step such that integrating
+      rate * dt over the distribution window results in the annual mass equal to the
+      frame.in amount. The dust is spread over a window of length:
+          L = max(duration_from_frame_in, timestep_at_event)
+      and partial overlaps with irregular timesteps are handled.
+    - Writes file with header "# time(yr)\t<feedstock_1>\t<feedstock_2>"
+      and returns the full path of the created file.
+
+    Returns:
+        path to created file (str)
+    Raises:
+        FileNotFoundError if q_temp.in or frame.in cannot be found.
+        ValueError for malformed files or invalid t_add.
+    """
+
+    if not (0.0 <= t_add <= 1.0):
+        raise ValueError("t_add must be between 0 and 1 (fraction of year).")
+
+    qtemp_path = os.path.join(outdir, runname, "q_temp.in") # for time grid
+    frame_path = os.path.join(outdir, runname, "frame.in")  # for application rates
+    if not os.path.isfile(qtemp_path):
+        raise FileNotFoundError(f"q_temp.in not found at {qtemp_path}")
+    if not os.path.isfile(frame_path):
+        raise FileNotFoundError(f"frame.in not found at {frame_path}")
+
+    # ---------------------
+    # Read times from q_temp.in (first column)
+    # ---------------------
+    times = []
+    with open(qtemp_path, "r") as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            parts = line.split()
+            try:
+                t = float(parts[0])
+            except Exception:
+                # skip header rows or malformed lines
+                continue
+            times.append(t)
+    if len(times) < 1:
+        raise ValueError("No time values found in q_temp.in (first column).")
+    times = np.array(times, dtype=float)
+    # sort just in case
+    sort_idx = np.argsort(times)
+    times = times[sort_idx]
+
+    # compute timestep durations dt for each index (interval [t[i], t[i]+dt[i]))
+    n = times.size
+    dt = np.empty(n, dtype=float)
+    if n == 1:
+        # single time point: assume a default small dt or use 1.0 yr?
+        # We'll default to dt = 1.0 for safety (user rarely has single timepoint)
+        dt[:] = 1.0
+    else:
+        dt[:-1] = times[1:] - times[:-1]
+        # last dt use same as previous (reasonable default)
+        dt[-1] = dt[-2] if n >= 2 else dt[0]
+
+    # ---- build output dict if dryrun
+    if dryrun:
+        outdict = {
+            "time_yr": times,
+            "dt": dt,
+        }
+    # ---------------------
+    # Parse frame.in for amounts and duration
+    # ---------------------
+    amount1 = 0.0
+    amount2 = 0.0
+    duration_min = 0.05  # fallback if not found in frame.in
+    with open(frame_path, "r") as f:
+        for raw in f:
+            line = raw.strip()
+            if not line:
+                continue
+            lower = line.lower()
+            # look for the numeric token at start of the line if label included
+            tokens = line.split()
+            # token[0] is likely the number in the sample
+            try:
+                val = float(tokens[0])
+            except Exception:
+                # try to find first float in line
+                val = None
+                for tok in tokens:
+                    try:
+                        val = float(tok)
+                        break
+                    except Exception:
+                        continue
+                if val is None:
+                    continue
+            if "amounts of dusts" in lower and amount1 == 0.0:
+                amount1 = float(val)
+            elif "amounts of 2nd dusts" in lower and amount2 == 0.0:
+                amount2 = float(val)
+            elif "duration of dust application" in lower:
+                duration_min = float(val)
+
+    # Prepare output arrays (rates in g/m2/yr at each time point)
+    rates1 = np.zeros_like(times, dtype=float)
+    rates2 = np.zeros_like(times, dtype=float)
+    cumrates1 = np.zeros_like(times, dtype=float) # for dryrun only
+    cumrates2 = np.zeros_like(times, dtype=float) # for dryrun only
+
+    # Helper: find index i where times[i] <= t_event < times[i] + dt[i]
+    def find_interval_index(t_event: float) -> Optional[int]:
+        # if event is before first time or after last interval, return None
+        if t_event < times[0] or t_event >= times[-1] + dt[-1]:
+            return None
+        # binary search for i such that times[i] <= t_event < times[i] + dt[i]
+        lo = 0
+        hi = n - 1
+        while lo <= hi:
+            mid = (lo + hi) // 2
+            start = times[mid]
+            end = start + dt[mid]
+            if start <= t_event < end:
+                return mid
+            if t_event < start:
+                hi = mid - 1
+            else:
+                lo = mid + 1
+        # fallback linear search
+        for i in range(n):
+            if times[i] <= t_event < times[i] + dt[i]:
+                return i
+        return None
+
+    # Determine which integer years to consider: from floor(min time) up to floor(max_time)
+    year_start = math.floor(times[0])
+    # consider events up to last time (if last event falls exactly at end, included if within last+dt)
+    year_end = math.floor(times[-1])  # inclusive
+    # but also include year_end+1 if t_add places event within final interval
+    # We'll loop year from year_start to year_end inclusive, then check event_time bounds
+
+    for year in range(year_start, year_end + 1):
+        total1 = 0.  # for dryrun only
+        total2 = 0.  # for dryrun only
+        t_event = float(year) + float(t_add)
+        idx = find_interval_index(t_event)
+        if idx is None:
+            # event outside simulation window -> skip
+            continue
+        # local timestep containing event
+        dt_event = dt[idx]
+        # spread length L = max(dt_event, duration_min)
+        L = max(float(dt_event), float(duration_min))
+        # (remove floating point issues w/ L)
+        L = np.round(L, 6)
+        if dryrun: # troubleshoot
+            print(f"Spread length: {L}")
+        # distribution window [start, end)
+        start = t_event
+        end = t_event + L
+
+        # For each timestep, compute overlap with [start,end) and allocate proportionally
+        # If amount1 > 0, allocate; same for amount2
+        if amount1 != 0.0:
+            # total mass to allocate (per year) is amount1 [g/m2/yr]
+            A = float(amount1)
+            # contribution mass per timestep = A * (overlap / L)
+            # rate contribution = contribution_mass / dt[i]  (units g/m2/yr)
+            for i in range(n):
+                step_start = float(times[i])
+                step_end = step_start + float(dt[i])
+                overlap = max(0.0, min(step_end, end) - max(step_start, start))
+                if overlap > 0.0:
+                    contrib_mass = A * (overlap / L)  # g/m2  (mass applied this year portion)
+                    # convert to rate for this step (g/m2/yr)
+                    rate_add = contrib_mass / float(dt[i])
+                    rates1[i] += rate_add
+                total1 += rates1[i]
+                cumrates1[i] = total1
+
+        if amount2 != 0.0:
+            A2 = float(amount2)
+            for i in range(n):
+                step_start = float(times[i])
+                step_end = step_start + float(dt[i])
+                overlap = max(0.0, min(step_end, end) - max(step_start, start))
+                if overlap > 0.0:
+                    contrib_mass = A2 * (overlap / L)
+                    rate_add = contrib_mass / float(dt[i])
+                    rates2[i] += rate_add
+                total2 += rates2[i]
+                cumrates2[i] = total2
+
+    # Build header and only include columns for requested feedstocks
+    headers: List[str] = ["time(yr)"]
+    col_arrays: List[np.ndarray] = [times]
+    if dustname1 is not None:
+        headers.append(dustname1)
+        col_arrays.append(rates1)
+    if dustname2 is not None:
+        headers.append(dustname2)
+        col_arrays.append(rates2)
+    # If user asked for only one feedstock but frame.in had nonzero amount for the other,
+    # that's their choice — we include only columns requested.
+
+    if dryrun:
+        if dustname1 is not None:
+            if dustname2 is not None:
+                outdict["rate1_gm2yr"] = rates1
+                outdict["cumrate1_gm2yr"] = cumrates1
+                outdict["rate2_gm2yr"] = rates2
+                outdict["cumrate2_gm2yr"] = cumrates2
+            else:
+                outdict["rate1_gm2yr"] = rates1
+                outdict["cumrate1_gm2yr"] = cumrates1
+        elif dustname2 is not None:
+            outdict["rate2_gm2yr"] = rates2
+            outdict["cumrate2_gm2yr"] = cumrates2
+        return pd.DataFrame(outdict)
+
+    else:
+        # Write file
+        outpath = os.path.join(outdir, runname, output_filename)
+        with open(outpath, "w") as fout:
+            fout.write("# " + "\t".join(headers) + "\n")
+            # write formatted rows; use high precision
+            fmt = "{:.8e}"
+            nrows = times.size
+            for i in range(nrows):
+                row_vals = []
+                for arr in col_arrays:
+                    # arr may contain float values
+                    row_vals.append(fmt.format(float(arr[i])))
+                fout.write("\t".join(row_vals) + "\n")
+
+        return outpath
 
 
 # --------------------------------------------------------------------------
