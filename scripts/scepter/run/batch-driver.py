@@ -6,6 +6,7 @@ Usage:
   uv run python3 batch-driver.py <batchName> <paramName>
 Example:
   uv run python3 batch-driver.py _test-batch-n6.csv singlerun
+  uv run python3 batch-driver.py _test-batch-richards-n6.csv singlerun
 
 Where <batchName> is the CSV filename (in S3 under batch-input-dir configured in local_coiled.py)
 and <paramName> is the key name of a dictionary in inputs/scepter/params/local_coiled.py.

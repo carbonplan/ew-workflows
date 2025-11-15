@@ -41,3 +41,4 @@ RUN make rateA
 RUN make rateB
 RUN make rateC
 RUN make rateD
+RUN make richards
