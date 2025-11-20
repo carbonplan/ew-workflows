@@ -22,7 +22,7 @@ RUN apt-get update \
     && export LD_LIBRARY_PATH=/usr/lib/openblas-base/
 
 # Install Jupyter and typical notebook deps
-RUN apt install \
+RUN apt-get update && apt-get install -y \
     &&  python3-jupyterlab \
         python3-ipykernel \
         python3-numpy \
