@@ -35,22 +35,22 @@ RUN S5CMD_VERSION=2.3.0 \
 # WORKDIR /home/jovyan/SCEPTER
 # RUN sed -i "s|-I/home/tykukla/SCEPTER/data|-I${PWD}/data|" makefile
 
-# Use root (default)
-USER root
-WORKDIR /root
+# # Use root (default)
+# USER root
+# WORKDIR /root
 
-# Clone SCEPTER
-RUN git clone https://github.com/carbonplan/SCEPTER.git
+# # Clone SCEPTER
+# RUN git clone https://github.com/carbonplan/SCEPTER.git
 
-# Update Makefile
-WORKDIR /root/SCEPTER
-RUN sed -i "s|-I/home/tykukla/SCEPTER/data|-I${PWD}/data|" makefile
+# # Update Makefile
+# WORKDIR /root/SCEPTER
+# RUN sed -i "s|-I/home/tykukla/SCEPTER/data|-I${PWD}/data|" makefile
 
-# compile
-RUN make clean
-RUN make all
-RUN make rateA
-RUN make rateB
-RUN make rateC
-RUN make rateD
-RUN make richards
+# # compile
+# RUN make clean
+# RUN make all
+# RUN make rateA
+# RUN make rateB
+# RUN make rateC
+# RUN make rateD
+# RUN make richards
