@@ -22,12 +22,12 @@ RUN apt-get update \
     && export LD_LIBRARY_PATH=/usr/lib/openblas-base/
 
 # Install Jupyter and typical notebook deps
-RUN pip install --no-cache-dir \
-        jupyterlab \
-        ipykernel \
-        numpy \
-        pandas \
-        dask distributed
+RUN apt install \
+    &&  python3-jupyterlab \
+        python3-ipykernel \
+        python3-numpy \
+        python3-pandas \
+        python3-dask distributed
 
 # install s5cmd (latest release from GitHub)
 RUN S5CMD_VERSION=2.3.0 \
