@@ -1,4 +1,5 @@
-FROM quay.io/pangeo/pangeo-notebook
+FROM quay.io/igwn/builder:bookworm    
+# FROM quay.io/pangeo/pangeo-notebook
 
 # -- troubleshoot: 
 #    build image with `docker build -t scepter-dev:latest .` from the same dir as the dockerfile
@@ -24,14 +25,25 @@ RUN S5CMD_VERSION=2.3.0 \
     && rm s5cmd_${S5CMD_VERSION}_Linux-64bit.tar.gz \
     && chmod +x /usr/local/bin/s5cmd
 
-# Clone SCEPTER 
-# (first switch user, required for quay.io/pangeo/pangeo-notebook)
-USER jovyan    
-WORKDIR /home/jovyan
-RUN git clone https://github.com/carbonplan/SCEPTER.git 
+# # Clone SCEPTER 
+# # (first switch user, required for quay.io/pangeo/pangeo-notebook)
+# USER jovyan    
+# WORKDIR /home/jovyan
+# RUN git clone https://github.com/carbonplan/SCEPTER.git 
 
-# Update the Makefile with the proper SCEPTER data path
-WORKDIR /home/jovyan/SCEPTER
+# # Update the Makefile with the proper SCEPTER data path
+# WORKDIR /home/jovyan/SCEPTER
+# RUN sed -i "s|-I/home/tykukla/SCEPTER/data|-I${PWD}/data|" makefile
+
+# Use root (default)
+USER root
+WORKDIR /root
+
+# Clone SCEPTER
+RUN git clone https://github.com/carbonplan/SCEPTER.git
+
+# Update Makefile
+WORKDIR /root/SCEPTER
 RUN sed -i "s|-I/home/tykukla/SCEPTER/data|-I${PWD}/data|" makefile
 
 # compile
