@@ -51,8 +51,8 @@ RUN sed -i "s|-I/home/tykukla/SCEPTER/data|-I${PWD}/data|" makefile
 # RUN sed -i "s|-I/home/tykukla/SCEPTER/data|-I${PWD}/data|" makefile
 
 
-# USER root
-# WORKDIR /home/jovyan/SCEPTER
+USER root
+WORKDIR /home/jovyan/SCEPTER
 
 # compile
 RUN make clean
