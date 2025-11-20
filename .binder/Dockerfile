@@ -18,6 +18,9 @@ RUN apt-get update \
         libopenblas-dev \
     && export LD_LIBRARY_PATH=/usr/lib/openblas-base/
 
+# move gfortran-12 to gfortran
+RUN update-alternatives --install /usr/bin/gfortran gfortran /usr/bin/gfortran-12 100
+
 
 # install s5cmd (latest release from GitHub)
 RUN S5CMD_VERSION=2.3.0 \
@@ -46,6 +49,10 @@ RUN sed -i "s|-I/home/tykukla/SCEPTER/data|-I${PWD}/data|" makefile
 # # Update Makefile
 # WORKDIR /root/SCEPTER
 # RUN sed -i "s|-I/home/tykukla/SCEPTER/data|-I${PWD}/data|" makefile
+
+
+# USER root
+# WORKDIR /home/jovyan/SCEPTER
 
 # compile
 RUN make clean
