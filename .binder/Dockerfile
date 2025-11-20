@@ -11,12 +11,23 @@ USER root
 # Install system dependencies
 RUN apt-get update \
     && apt-get -y install \
+        python3 \ 
+        python3-pip \
+        python3-venv \
         make \
         gfortran \
         curl \
         wget \
         libopenblas-dev \
     && export LD_LIBRARY_PATH=/usr/lib/openblas-base/
+
+# Install Jupyter and typical notebook deps
+RUN pip install --no-cache-dir \
+        jupyterlab \
+        ipykernel \
+        numpy \
+        pandas \
+        dask distributed
 
 # install s5cmd (latest release from GitHub)
 RUN S5CMD_VERSION=2.3.0 \
