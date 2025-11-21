@@ -1663,7 +1663,7 @@ def prof_postproc_save(
             ds = bsd_profile_to_ds(outdir, runname_field, **postproc_prof_dict[pp], multi_iter=multi_iter)
         elif pp == "adsorbed_percCEC":
             ds = ads_percCec_prof_baseSat(outdir, runname_field, **postproc_prof_dict[pp], multi_iter=multi_iter)
-        elif pp == "soil_ph":
+        elif (pp == "soil_ph") and (runname_lab is not None):
             ds = profile_to_ds_optMean(outdir, runname_lab, **postproc_prof_dict[pp], multi_iter=multi_iter)
             ds = ds.sel(time = np.max(ds.time.values)) # keep only the max time (lab run time is not aligned with field!)
         # ---------------------------------

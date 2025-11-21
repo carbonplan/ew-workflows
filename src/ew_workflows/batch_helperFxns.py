@@ -166,6 +166,95 @@ def build_df_sa(
     # return result
     return df
 
+# [1b] BUILD DF FOR ALL_COMBINATIONS (+allowing a flexible control)
+# (key difference from `build_df` is that "const_dict" is used for 
+#  control values, and does not overwrite the other dict)
+def build_df_all_combinations(
+        pref: str,
+        const_dict: dict,
+        sites: list,
+        by_site: dict,
+        all_combinations: dict,
+        add_ctrl: bool,
+        add_index: bool=True,
+) -> pd.DataFrame:
+    '''
+    Turn dictionaries into a .csv file that serves as a batch input for 
+    running SCEPTER. Vars are either constant for all runs, only vary by 
+    site, or vary from one run to the next (within a site). 
+    All dicts should be structured such that the key
+    is the column name, the value is a cell value
+
+    Parameters
+    ----------
+    pref : str
+        prefix for each run name
+    const_dict : dict
+        dictionary for the values that are held constant 
+        across all simulations
+    sites : list
+        list of the site names across which to run the simulations
+    by_site : dict
+        dictionary for all the values that only vary by site
+        (each value should be a list of len(sites) where the 
+        first value corresponds to the first site indexed, and 
+        so on)
+    all_combinations : dict
+        dictionary for all the values to vary such that every
+        unique combination of these values is tested for each 
+        site
+    add_ctrl : bool
+        [True | False] whether to add a control simulation with zero 
+        dust application for each site (NOTE, you may not want to add 
+        0 to your dust app rate list because it will needlessly repeat
+        for every other var in all_combinations)
+
+    Returns
+    -------
+    pd.DataFrame
+        This is the file that will become the .csv batch input. Each column
+        should be a variable that the SCEPTER python scripts can recognize 
+        (no typos!)
+    '''
+    # [1] generate all combinations from the dict's vectors
+    all_combos_list = list(itertools.product(*all_combinations.values()))
+    # make dataframe and repeat values for the number of sites
+    df = pd.DataFrame(all_combos_list * len(sites), columns=all_combinations.keys())
+
+    # [2] add site-specific vars
+    # add site labels
+    df['site'] = [site for site in sites for _ in range(len(all_combos_list))]
+    # for each key in by_site, alternate the values for the corresponding site
+    for key, values in by_site.items():
+        df[key] = [values[site_idx] for site_idx in range(len(sites)) for _ in range(len(all_combos_list))]
+
+    # [3] add constant vars that do not appear in "all_combinations"
+    unique_keys = {k: v for k, v in const_dict.items() if k not in df.columns}
+    control_keys = {k: v for k, v in const_dict.items() if k in df.columns}
+    for key, value in unique_keys.items():
+        df[key] = value
+    
+    # [4] add control cases (no dust application) if add_ctrl is True
+    if add_ctrl:
+        # loop through sites
+        for thissite in reversed(sites):
+            tmp_row = df[df['site'] == thissite].iloc[0]
+            # set dust to zero
+            tmp_row['dustrate'] = 0.0
+            # add control keys 
+            for key, value in control_keys.items():
+                tmp_row[key] = value
+            # concat to top row
+            df = pd.concat([pd.DataFrame([tmp_row]), df], ignore_index=True)
+
+    # [5] add the newrun ID
+    df = newrun_id_fxn(df, pref, None, add_index=add_index)
+    # check that all the run ids are unique and return a warning if not
+    if not df['newrun_id'].is_unique:
+        warnings.warn("Column newrun_id contains duplicate entries. The latter run ID will likely overwrite the former")
+
+    return df
+
 
 # [2] MAKE NEWRUN ID
 def newrun_id_fxn(df: pd.DataFrame, pref: str, clim_tag: str, add_index: bool=False) -> pd.DataFrame:
@@ -221,7 +310,7 @@ def newrun_id_fxn(df: pd.DataFrame, pref: str, clim_tag: str, add_index: bool=Fa
     
     # return result
     return df
-    
+
 # [3] SAVE DATAFRAME AS CSV
 def save_df(df: pd.DataFrame, savepath_batch: str, fn: str,
             multi_run_split: bool, max_iters_per_set: int=None):

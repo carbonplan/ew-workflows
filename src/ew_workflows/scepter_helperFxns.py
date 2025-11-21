@@ -1077,6 +1077,9 @@ def run_complete_check(
 
     # loop through dirs
     for runname in [runname_field, runname_lab]:
+        if runname_lab is None: # then field only
+            continue
+
         if runname == runname_lab:
             include_duration_check_internal = (
                 False  # don't do duration checks on lab runs
@@ -1254,11 +1257,11 @@ def to_aws(
     # --- check if runnames are strings and, if so, convert to lists
     if isinstance(runname_field, str):
         runname_field = [runname_field]
-    if isinstance(runname_lab, str):
+    if isinstance(runname_lab, str) and (runname_lab is not None):
         runname_lab = [runname_lab]
 
     # --- check if runname_field and runname_lab are not the same length
-    if len(runname_field) != len(runname_lab):
+    if (len(runname_field) != len(runname_lab)) and (runname_lab is not None):
         raise ValueError("Number of runname_field inputs != number of runname_lab inputs in `shf.to_aws`. Can't loop through each run properly since each run must have a field and lab component")
     else:
         nruns = len(runname_field)  # get the total number of runs to loop through
@@ -1270,10 +1273,15 @@ def to_aws(
     # loop through runs
     for rundx in range(nruns):
         tmp_runname_field = runname_field[rundx]
-        tmp_runname_lab = runname_lab[rundx]    
+        if runname_lab is not None:
+            tmp_runname_lab = runname_lab[rundx]    
+        else:
+            tmp_runname_lab = "skipmeplease"
         
         # loop through dirs
         for runname in [tmp_runname_field, tmp_runname_lab]:
+            if (runname == tmp_runname_lab) and (runname_lab is None):
+                continue
             src = os.path.join(outdir, runname)
             dst_aws = os.path.join(aws_bucket)
             # cmd_activate = "conda run -n cdr-scepter1p0_env"  # activate the virtual environment that has s5cmd

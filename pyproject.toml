@@ -9,6 +9,7 @@ dependencies = [
     "distributed>=2024.8.0",
     "icechunk>=1.1.5",
     "ipykernel>=6.30.1",
+    "matplotlib>=3.10.7",
     "obstore>=0.8.2",
     "s3fs>=2025.9.0",
     "toml>=0.10.2",
