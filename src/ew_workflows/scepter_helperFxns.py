@@ -1261,8 +1261,9 @@ def to_aws(
         runname_lab = [runname_lab]
 
     # --- check if runname_field and runname_lab are not the same length
-    if (len(runname_field) != len(runname_lab)) and (runname_lab is not None):
-        raise ValueError("Number of runname_field inputs != number of runname_lab inputs in `shf.to_aws`. Can't loop through each run properly since each run must have a field and lab component")
+    if runname_lab is not None:
+        if (len(runname_field) != len(runname_lab)):
+            raise ValueError("Number of runname_field inputs != number of runname_lab inputs in `shf.to_aws`. Can't loop through each run properly since each run must have a field and lab component")
     else:
         nruns = len(runname_field)  # get the total number of runs to loop through
 
@@ -1280,7 +1281,7 @@ def to_aws(
         
         # loop through dirs
         for runname in [tmp_runname_field, tmp_runname_lab]:
-            if runname is None:   # for when we skip runname_lab
+            if runname == "skipmeplease":   # for when we skip runname_lab
                 continue
             src = os.path.join(outdir, runname)
             dst_aws = os.path.join(aws_bucket)
