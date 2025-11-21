@@ -1280,7 +1280,7 @@ def to_aws(
         
         # loop through dirs
         for runname in [tmp_runname_field, tmp_runname_lab]:
-            if (runname == tmp_runname_lab) and (runname_lab is None):
+            if runname is None:   # for when we skip runname_lab
                 continue
             src = os.path.join(outdir, runname)
             dst_aws = os.path.join(aws_bucket)
