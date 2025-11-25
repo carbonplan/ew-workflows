@@ -331,6 +331,8 @@ def update_clim(
     updates the climatology to match the multi-run index and saves the result
     in the new run's directory. (for use in multi-run only)
 
+    works for clim files on local or s3. 
+
     Parameters
     ----------
     inputfile : str
@@ -344,6 +346,17 @@ def update_clim(
     Returns
     -------
     """
+    # initialize flag for whether to move temp file to final file 
+    # (for s3 cases where we first copy to local, then update clim)
+    move_tempfile_to_final = False
+    # check if inputfile is on s3 
+    if inputfile.startswith("s3://"):
+        move_tempfile_to_final = True
+        copy_files(inputfile, outputfile)  # copy to local first
+        # update input and output
+        outputfile = outputfile + ".tmp"  # save to local tmp file
+        inputfile = outputfile  # now read from local
+
     # open the input and output files
     with open(inputfile, "r") as f_in, open(outputfile, "w") as f_out:
         # skip the header line and copy it to new file
@@ -366,6 +379,10 @@ def update_clim(
                 f_out.write(
                     f"{formatted_yr}\t{formatted_clim}\n"
                 )  # Adjust the delimiter as needed
+    
+    # if needed, move the temp file to the final local location
+    if move_tempfile_to_final: # move output tmp file to inputfile location
+        os.replace(outputfile, inputfile)
 
 
 def add_dustsp_to_sld(

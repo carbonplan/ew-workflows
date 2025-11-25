@@ -1,0 +1,2 @@
+# Note: Control scripts are primarily used for Argo implementation. 
+# Batch runs with coiled sidestep the control scripts altogether. 

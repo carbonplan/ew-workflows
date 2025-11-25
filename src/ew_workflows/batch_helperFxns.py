@@ -9,7 +9,7 @@ import pandas as pd
 import itertools
 import warnings
 
-
+# %% 
 ## [1] BUILD DATAFRAME
 def build_df(pref: str, const_dict: dict, sites: list, 
             by_site: dict, all_combinations: dict, add_ctrl: bool) -> pd.DataFrame:
@@ -404,3 +404,161 @@ def prevent_accidental_overwrite(df: pd.DataFrame, path_fn: str, fn: str):
     else:        
         df.to_csv(path_fn, index=False)
         print("File successfully saved")
+
+
+# [ make_dustflx_csv helper ]
+def expand_to_years(lst, n, lstname="list"):
+    if len(lst) == 1 and lst:
+        return lst * n
+    elif len(lst) != n:
+        print(f"Warning: {lstname} length {len(lst)} does not match expected {n}. Will likely cause problems.")
+    return lst
+
+# [ make_dustflx_csv helper ]
+def add_dust_row(
+        y, duration, sp, rate, sp_2nd, rate_2nd,
+        dustsp=None, dustrate=None,
+        dustsp_2nd=None, dustrate_2nd=None
+):
+    tmprow = {
+        "yr_start": y,
+        "duration": duration,
+    }
+    # add keys if lists are not all none
+    if dustsp and not all(v is None for v in dustsp):
+        tmprow["dustsp"] = sp
+    if dustrate and not all(v is None for v in dustrate):
+        tmprow["dustrate"] = rate
+    if dustsp_2nd and not all(v is None for v in dustsp_2nd):
+        tmprow["dustsp_2nd"] = sp_2nd
+    if dustrate_2nd and not all(v is None for v in dustrate_2nd):
+        tmprow["dustrate_2nd"] = rate_2nd
+    return tmprow
+
+
+def make_dustflx_csv(
+        savehere: str,
+        savename: str,
+        max_time: int,
+        application_years: list,
+        dustsp: list,
+        dustrate: list,
+        dustrad: list,
+        dustsp_2nd: list,
+        dustrate_2nd: list,
+        returndf: bool=False,
+        savedf: bool=True,
+    ):
+    '''
+    Create a dust flux input .csv file for SCEPTER multi-year runs.
+    The application_years list defines where a new dust application starts.
+    All other lists must either be length 1 (for constant values) or
+    length equal to the number of application years (for varying values).
+
+    Parameters
+    ----------
+    savehere : str
+        path to save the output .csv file
+    savename : str
+        name of the output .csv file
+    max_time : int
+        maximum time (years) for the total simulation
+    application_years : list
+        list of years where a new dust application starts 
+        (all other years are assumed to have no dust application)
+    dustsp : list
+        list of dust species applied at each application year
+        (use length 1 for constant dustsp or 
+        len(application_years) for varying dustsp)
+    dustrate : list
+        list of dust application rates at each application year
+        (use length 1 for constant dustrate or 
+        len(application_years) for varying dustrate)
+    dustrad : list
+        list of dust particle sizes at each application year
+        (use length 1 for constant dustrad or 
+        len(application_years) for varying dustrad)
+    dustsp_2nd : list
+        list of second dust species applied at each application year
+        (use length 0 for default, length 1 for constant dustsp_2nd or 
+        len(application_years) for varying dustsp_2nd)
+    dustrate_2nd : list
+        list of second dust application rates at each application year
+        (use length 0 for default, length 1 for constant dustrate_2nd or 
+        len(application_years) for varying dustrate_2nd)
+    '''
+    # sort application_years
+    yrs = sorted(set(int(y) for y in application_years))
+    # --- handle lists ( determine if singleton or per-app values )
+    dustsp       = expand_to_years(dustsp, len(yrs), lstname="dustsp")
+    dustrate     = expand_to_years(dustrate, len(yrs), lstname="dustrate")
+    dustrad      = expand_to_years(dustrad, len(yrs), lstname="dustrad")
+    dustsp_2nd   = expand_to_years(dustsp_2nd, len(yrs), lstname="dustsp_2nd")
+    dustrate_2nd = expand_to_years(dustrate_2nd, len(yrs), lstname="dustrate_2nd")
+    # --- set up loop
+    rows = []
+    i=0
+    n=len(yrs)
+    # [ loop ]
+    while i < n:
+        y = yrs[i]
+        sp = dustsp[i]
+        rate = dustrate[i]
+        sp_2nd = dustsp_2nd[i]
+        rate_2nd = dustrate_2nd[i]
+
+        if i == n - 1:
+            # last application year (subtract 1 from max_time bc duration starts at 0)
+            duration = max_time - 1 - y
+            if duration < 1: # no zero-duration rows
+                i += 1
+                continue
+            else:
+                rows.append(add_dust_row(y, duration, sp, rate, sp_2nd, rate_2nd,
+                                         dustsp=dustsp, dustrate=dustrate, dustsp_2nd=dustsp_2nd, dustrate_2nd=dustrate_2nd))
+                i += 1
+                continue
+
+        gap = yrs[i + 1] - y
+
+        if gap == 1:
+            # consecutive block: walk forward until the block ends
+            j = i
+            while j + 1 < n and yrs[j + 1] - yrs[j] == 1:
+                j += 1
+            last_in_block = yrs[j]
+            duration = last_in_block - y  # could be 0 if only single year, otherwise >=1
+            rows.append(add_dust_row(y, duration, sp, rate, sp_2nd, rate_2nd,
+                                         dustsp=dustsp, dustrate=dustrate, dustsp_2nd=dustsp_2nd, dustrate_2nd=dustrate_2nd))
+            i = j + 1
+            # add the next row for zero application
+            duration = yrs[i] - last_in_block
+            if duration > 0:
+                rows.append(add_dust_row(last_in_block, duration, sp, rate, sp_2nd, rate_2nd,
+                                         dustsp=dustsp, dustrate=dustrate, dustsp_2nd=dustsp_2nd, dustrate_2nd=dustrate_2nd))
+        elif gap > 1:
+            # big gap: create two rows:
+            # 1) application in first year (duration = 1)
+            rows.append(add_dust_row(y, 1, sp, rate, sp_2nd, rate_2nd,
+                                         dustsp=dustsp, dustrate=dustrate, dustsp_2nd=dustsp_2nd, dustrate_2nd=dustrate_2nd))
+            # 2) post-application period with zero dustrate covering the rest of the gap
+            rows.append(add_dust_row(y + 1, gap - 1, sp, 0, sp_2nd, 0,
+                                         dustsp=dustsp, dustrate=dustrate, dustsp_2nd=dustsp_2nd, dustrate_2nd=dustrate_2nd))
+            i += 1
+        else:
+            # gap == 0 should not happen because yrs are unique, but handle defensively
+            rows.append(add_dust_row(y, 0, sp, rate, sp_2nd, rate_2nd,
+                                         dustsp=dustsp, dustrate=dustrate, dustsp_2nd=dustsp_2nd, dustrate_2nd=dustrate_2nd))
+            i += 1
+
+    # create dataframe
+    df_out = pd.DataFrame(rows)
+    # save to csv
+    if savedf:
+        savepath = os.path.join(savehere, savename)
+        df_out.to_csv(savepath, index=False)
+        print(f"Dust flux .csv saved to: {savepath}")
+    if returndf:
+        return df_out
+
+# %% 
