@@ -3,10 +3,10 @@
 Driver to submit CSV rows as per-task env var dicts to Coiled Batch.
 
 Usage:
-  uv run python3 batch-driver.py <batchName> <paramName>
+  uv run python3 batch-driver_rerun-failed-runs.py <batchName> <paramName>
 Example:
-  uv run python3 batch-driver.py _test-batch-n6.csv singlerun
-  uv run python3 batch-driver.py _test-batch-richards-n6.csv singlerun
+  uv run python3 batch-driver_rerun-failed-runs.py _test-batch-n6.csv singlerun
+  uv run python3 batch-driver_rerun-failed-runs.py _test-batch-richards-n6.csv singlerun
 
 Where <batchName> is the CSV filename (in S3 under batch-input-dir configured in local_coiled.py)
 and <paramName> is the key name of a dictionary in inputs/scepter/params/local_coiled.py.
@@ -14,14 +14,17 @@ and <paramName> is the key name of a dictionary in inputs/scepter/params/local_c
 This script will:
  - import local_coiled params dict
  - fetch CSV from S3 (or local file when S3 not configured)
- - create one per-row dict, and submit via coiled.batch.run with map_over_task_var_dicts
+ - identify the runs that failed or were incomplete
+ - create one per-row dict for those reruns, and submit via coiled.batch.run with map_over_task_var_dicts
  - set TASK_INPUT_KEYS and SAVE_DIR job-level env vars so the worker knows where to persist
 """
 # %% 
-import argparse
-import pandas as pd
 import os
 from pathlib import Path
+import time 
+
+import argparse
+import pandas as pd
 from urllib.parse import urljoin
 
 import coiled
@@ -29,11 +32,12 @@ import coiled
 from ew_workflows import coiled_helper_fxns as chf
 # %% 
 # ====================================================================================================
-# # [ INTERACTIVE DEBUG: fake sys.args ]
+# # [ DEBUG: fake sys.args ]
 # import sys
-# sys.argv = ["batch-driver.py", "longrun_monthly_ltm_v0_test.csv", "singlerun"]
+# print("~~ DEBUG ON: fake sys.args ~~")
+# time.sleep(5)  
+# sys.argv = ["batch-driver_rerun-failed-runs.py", "longrun_monthly_ltm_v0_test3.csv", "singlerun"]
 # ====================================================================================================
-
 # --- parse inputs
 parser = argparse.ArgumentParser()
 parser.add_argument("batchName")
@@ -48,10 +52,31 @@ bucket_dir = os.environ.get("BATCH_INPUT_DIR_OVERRIDE") or params.get("batch-inp
 if not bucket_dir:
     raise ValueError("batch-input-dir not found in params")
 
-rows = chf.read_csv_from_s3_or_local(bucket_dir, args.batchName)
-print(f"Read {len(rows)} rows from {bucket_dir}/{args.batchName}")
+df = chf.read_csv_from_s3_or_local(bucket_dir, args.batchName, return_type="dataframe")
+print(f"Read {len(df)} rows from {bucket_dir}/{args.batchName}")
 
+# %%
+# --- identify failed/incomplete runs -------------------
+df = chf.find_failed_or_stale_runs(
+        df_batch = df,
+        multiyear = params.get("multiyear", False),
+        pars = params,
+        # ( usually hard-coded, not in params )
+        completed_fn = params.get("completed_fn", "completed.res"),
+        check_results_fn = params.get("check_results_fn", "check_results.res"),
+        check_logs_fn = params.get("check_logs_fn", "check_logs.res"),
+        duration_threshold_frac = params.get("duration_threshold_frac", 0.2),
+        skip_duration_check = params.get("skip_duration_check", False)
+)
 
+df_rerun = df[df['rerun_needed'] == True]
+# convert to list of dicts for task submission
+rows = df_rerun.to_dict(orient="records")
+print("----------------------------------------------------------")
+print(f"Identified {len(rows)} failed/incomplete runs to rerun.")
+print("----------------------------------------------------------")
+
+# %%
 # --- submit batch -------------------
 worker_script="batch-worker.py"
 container_home = params.get("container-home", "/home/jovyan/")

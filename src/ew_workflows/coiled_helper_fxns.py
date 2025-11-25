@@ -606,6 +606,13 @@ def find_failed_or_stale_runs(
         df_batch["newrun_id_field_full"] = df_batch['newrun_id'] + "_" + df_batch['dustsp'] + "_field_tau"+df_batch["duration"].astype(float).astype(str).str.replace(".", "p")  # (duration has to be turned into float first because otherwise we miss the decimal pt)
         df_batch["newrun_id_lab_full"] = df_batch['newrun_id'] + "_" + df_batch['dustsp'] + "_lab_tau"+df_batch["duration"].astype(float).astype(str).str.replace(".", "p")  # (duration has to be turned into float first because otherwise we miss the decimal pt)
 
+    # convert strings to floats where applicable
+    for col in df_batch.select_dtypes(include="object"):
+        try:
+            df_batch[col] = pd.to_numeric(df_batch[col], errors="raise")
+        except Exception:
+            pass
+
     # --- check each row for whether it needs to be rerun -----
     df_batch_rerunCheck = allrows_rerun_check(
         df_batch = df_batch,
