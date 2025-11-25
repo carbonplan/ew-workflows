@@ -1077,7 +1077,7 @@ def run_complete_check(
 
     # loop through dirs
     for runname in [runname_field, runname_lab]:
-        if runname_lab is None: # then field only
+        if runname is None: # then field only
             continue
 
         if runname == runname_lab:
