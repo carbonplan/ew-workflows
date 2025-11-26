@@ -39,15 +39,22 @@ max_iters_per_set = 20    # [int] the number of runs per csv (only used if multi
 # ==========================================================================
 # common adjustments:
 const_dict = {
-    # --- MULTI-YEAR SPECIFIC ---
-    "dust_ts_dir": f"s3://carbonplan-carbon-removal/ew-workflows-data/scepter/dust/",
-    "dust_ts_fn": f"{dustsp}_100yr_3-yearly_001.csv",
-    # ---------------------------
-
     # --- commonly changed ---
     "duration": 100,    # [yr] duration of run (starts from earliest year)
     "dustsp": dustsp,   
     "dustsp_2nd": "amnt",
+
+    # --- MULTI-YEAR SPECIFIC ---
+    # "dust_ts_dir": f"s3://carbonplan-carbon-removal/ew-workflows-data/scepter/dust/",
+    # "dust_ts_fn": f"{dustsp}_100yr_3-yearly_001.csv",
+    # ---------------------------
+
+    # --- PH-REACT SPECIFIC ----
+    # "max_time": 100,    # [yr] total amount of time to simulate
+    # "duration": 1,    # [yr] duration of each individual run (starts from earliest year)
+    # "tph": 7.3,       # [] target pH for each iteration
+    # "phnorm_pw": True,  # metric for target pH (true = porewater pH; false = soil pH)
+    # ---------------------------
 
     # --- CONTROL VALUES ---
     "add_secondary": True,

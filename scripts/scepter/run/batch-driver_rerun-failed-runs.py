@@ -132,7 +132,7 @@ else:
             ),
 
             map_over_task_var_dicts=task_chunk,
-            name=chf.sanitize_job_name(args.batchName),
+            name=chf.sanitize_job_name(f"b{i}-{args.batchName}"),
             vm_type=params.get("vm_type", "m8g.xlarge"),
             scheduler_vm_type=params.get("vm_type", "m8g.xlarge"),
             arm=params.get("arm", True),
