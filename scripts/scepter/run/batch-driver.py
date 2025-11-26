@@ -29,7 +29,7 @@ import coiled
 from ew_workflows import coiled_helper_fxns as chf
 # %% 
 
-MAX_TASKS_PER_BATCH = 250   # avoid overloading coiled with too many tasks at once
+MAX_TASKS_PER_BATCH = 300   # avoid overloading coiled with too many tasks at once
 
 # ====================================================================================================
 # # [ DEBUG: fake sys.args ]

@@ -945,7 +945,7 @@ def empty_file_check(
             if fn_ext.lower() == ".png":
                 # print('found a .png')
                 continue
-            
+
             file_path = os.path.join(root, file)
             # check if the file is empty (ignoring spaces)
             with open(file_path, "r") as f:
@@ -1292,8 +1292,8 @@ def to_aws(
     if runname_lab is not None:
         if (len(runname_field) != len(runname_lab)):
             raise ValueError("Number of runname_field inputs != number of runname_lab inputs in `shf.to_aws`. Can't loop through each run properly since each run must have a field and lab component")
-    else:
-        nruns = len(runname_field)  # get the total number of runs to loop through
+
+    nruns = len(runname_field)  # get the total number of runs to loop through
 
     # --- TROUBLESHOOT ----
     # print(f"aws_save: {aws_save}")
