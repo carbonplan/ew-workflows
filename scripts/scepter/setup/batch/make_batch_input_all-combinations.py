@@ -25,7 +25,7 @@ from ew_workflows import batch_helperFxns as bhf
 # %%
 # [ UNIVERSAL ]
 runtype = "monthly_ltm"
-extra_tag = "_3yearly_v0"
+extra_tag = "3yearly_v0"
 pref = f"longrun_{runtype}_{extra_tag}"
 dustsp = "gbas"
 fn = pref + ".csv"

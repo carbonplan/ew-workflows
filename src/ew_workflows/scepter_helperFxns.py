@@ -357,6 +357,11 @@ def update_clim(
         outputfile = outputfile + ".tmp"  # save to local tmp file
         inputfile = outputfile  # now read from local
 
+    # check if inputfile is outputfile 
+    if inputfile == outputfile:
+        outputfile = outputfile + ".tmp"  # save to local tmp file
+        move_tempfile_to_final = True
+        
     # open the input and output files
     with open(inputfile, "r") as f_in, open(outputfile, "w") as f_out:
         # skip the header line and copy it to new file
