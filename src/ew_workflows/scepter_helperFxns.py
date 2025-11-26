@@ -361,7 +361,7 @@ def update_clim(
     if inputfile == outputfile:
         outputfile = outputfile + ".tmp"  # save to local tmp file
         move_tempfile_to_final = True
-        
+
     # open the input and output files
     with open(inputfile, "r") as f_in, open(outputfile, "w") as f_out:
         # skip the header line and copy it to new file
@@ -933,13 +933,19 @@ def empty_file_check(
             continue
 
         for file in files:
+            # get the file extension
+            _, fn_ext = os.path.splitext(file)
+
             if omit_saveSuff:  # then check if the suffix is ".save"
-                # get the file extension
-                _, fn_ext = os.path.splitext(file)
                 # skip this file if suffix is .save
                 if fn_ext.lower() == ".save":
                     # print('found a .save')
                     continue
+            # omit .png files
+            if fn_ext.lower() == ".png":
+                # print('found a .png')
+                continue
+            
             file_path = os.path.join(root, file)
             # check if the file is empty (ignoring spaces)
             with open(file_path, "r") as f:
