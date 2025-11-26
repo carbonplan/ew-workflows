@@ -17,7 +17,7 @@ singlerun = {
 
     # [ coiled-specific ; optional (the driver has defaults) ]
     "container-home": "/home/jovyan/",
-    "vm_type": "m6i.xlarge",      # make sure it's compatible with the container and arm selection
+    "vm_type": "m6i.large",      # make sure it's compatible with the container and arm selection  # (https://instances.vantage.sh)
     "arm": False,
     "region": "us-west-2",
     "spot_policy": "on-demand",    # "spot_with_fallback" [ can be deleted, but much cheaper ]
@@ -35,7 +35,7 @@ multiyear = {
 
     # [ coiled-specific ; optional (the driver has defaults) ]
     "container-home": "/home/jovyan/",
-    "vm_type": "m6i.xlarge",      # make sure it's compatible with the container and arm selection
+    "vm_type": "m6i.large",      # make sure it's compatible with the container and arm selection (https://instances.vantage.sh)
     "arm": False,
     "region": "us-west-2",
     "spot_policy": "on-demand",    # "spot_with_fallback" [ can be deleted, but much cheaper ]

@@ -31,6 +31,9 @@ import coiled
 
 from ew_workflows import coiled_helper_fxns as chf
 # %% 
+
+MAX_TASKS_PER_BATCH = 250   # avoid overloading coiled with too many tasks at once
+
 # ====================================================================================================
 # # [ DEBUG: fake sys.args ]
 # import sys
@@ -116,34 +119,37 @@ if os.environ.get("DRY_RUN"):
     print(f"dry_run: TRUE ; n_tasks: {len(task_dicts)}")
 
 else:
-    # Submit using map_over_task_var_dicts so each task receives its env vars
-    res = coiled.batch.run(
-        # command=f"python3 {worker_script}",
-        
-        command=(     # [ better for dev, but eventually we should bake this into the container ]
-            f"git clone https://github.com/carbonplan/ew-workflows.git {container_home}/ew-workflows && "    # clone in ew-workflows and install
-            f"pip install -e {container_home}/ew-workflows && "
-            f"python3 {worker_script}"       # run the batch-worker
-        ),
+    all_results = []
+    for i, task_chunk in enumerate(chf.tasklist_to_chunks(task_dicts, MAX_TASKS_PER_BATCH)):
+        # Submit using map_over_task_var_dicts so each task receives its env vars
+        res = coiled.batch.run(
+            # command=f"python3 {worker_script}",
+            
+            command=(     # [ better for dev, but eventually we should bake this into the container ]
+                f"git clone https://github.com/carbonplan/ew-workflows.git {container_home}/ew-workflows && "    # clone in ew-workflows and install
+                f"pip install -e {container_home}/ew-workflows && "
+                f"python3 {worker_script}"       # run the batch-worker
+            ),
 
-        map_over_task_var_dicts=task_dicts,
-        name=chf.sanitize_job_name(args.batchName),
-        vm_type=params.get("vm_type", "m8g.xlarge"),
-        scheduler_vm_type=params.get("vm_type", "m8g.xlarge"),
-        arm=params.get("arm", True),
-        container=params.get("container", None),
-        region=params.get("region", "us-west-2"),
-        tag=params.get("tag", {'Project': 'scepter'}),
-        spot_policy=params.get("spot_policy", "spot_with_fallback"),
-        forward_aws_credentials=False,   # i have an aws instance profile w/ coiled, so no need to pass creds
-        # files=[
-        #     str(Path(__file__).resolve().parents[3]),  # sync the whole ew-workflows repo
-        # ],
-        allow_cross_zone=True,
-        # env=job_env,
-        env={**job_env, "PYTHONPATH": "ew-workflows/src"},  # ensure ew_workflows importable
-    )
-    print("Submit result:", res)
+            map_over_task_var_dicts=task_chunk,
+            name=chf.sanitize_job_name(args.batchName),
+            vm_type=params.get("vm_type", "m8g.xlarge"),
+            scheduler_vm_type=params.get("vm_type", "m8g.xlarge"),
+            arm=params.get("arm", True),
+            container=params.get("container", None),
+            region=params.get("region", "us-west-2"),
+            tag=params.get("tag", {'Project': 'scepter'}),
+            spot_policy=params.get("spot_policy", "spot_with_fallback"),
+            forward_aws_credentials=False,   # i have an aws instance profile w/ coiled, so no need to pass creds
+            # files=[
+            #     str(Path(__file__).resolve().parents[3]),  # sync the whole ew-workflows repo
+            # ],
+            allow_cross_zone=True,
+            # env=job_env,
+            env={**job_env, "PYTHONPATH": "ew-workflows/src"},  # ensure ew_workflows importable
+        )
+        print("Submit result:", res)
+        all_results.append(res)
 
-    coiled.batch.status()
+        coiled.batch.status()
 # %%

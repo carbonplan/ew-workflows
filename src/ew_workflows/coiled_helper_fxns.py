@@ -626,3 +626,9 @@ def find_failed_or_stale_runs(
     )
 
     return df_batch_rerunCheck
+
+# split tasks into chunks
+def tasklist_to_chunks(lst, n):
+    """Yield successive n-sized chunks from lst."""
+    for i in range(0, len(lst), n):
+        yield lst[i:i+n]
