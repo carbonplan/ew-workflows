@@ -1301,9 +1301,11 @@ def to_aws(
         
     # loop through runs
     for rundx in range(nruns):
+        print(f"rundx -- {rundx}")
         tmp_runname_field = runname_field[rundx]
-        if runname_lab[rundx] is not None:
-            tmp_runname_lab = runname_lab[rundx]    
+        if runname_lab is not None:
+            if runname_lab[rundx] is not None:
+                tmp_runname_lab = runname_lab[rundx]    
         else:
             tmp_runname_lab = "skipmeplease"
         

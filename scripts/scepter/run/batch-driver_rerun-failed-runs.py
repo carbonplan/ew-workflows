@@ -39,7 +39,7 @@ MAX_TASKS_PER_BATCH = 300   # avoid overloading coiled with too many tasks at on
 # import sys
 # print("~~ DEBUG ON: fake sys.args ~~")
 # time.sleep(5)  
-# sys.argv = ["batch-driver_rerun-failed-runs.py", "longrun_monthly_ltm_v0_test3.csv", "singlerun"]
+# sys.argv = ["batch-driver_rerun-failed-runs.py", "longrun_monthly_ltm_v0.csv", "singlerun"]
 # ====================================================================================================
 # --- parse inputs
 parser = argparse.ArgumentParser()
