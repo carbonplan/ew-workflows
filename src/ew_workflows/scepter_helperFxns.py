@@ -438,8 +438,176 @@ def add_dustsp_to_sld(
     # return result
     return data
 
+
+
+def setup_solids_custom(
+    data: list,
+    spindir: str,
+    outdir: str,
+    spinname: str,
+    runname: str,
+    secondary_min_rule: str,
+    sld_track: list,
+    rockdata_dir: str,
+    secondslds_fn: str = "2ndslds.in",
+    secondslds_list_name: str = "2ndslds_def.in",
+)-> list:
+    '''
+    Follows the rule set in "secondary_min_rule" to setup the 
+    slds.in file (and, in case of "remove", the 2ndslds.in file)
     
+    The rules are: 
+        "add" -- add the species in "2ndslds.in" to "slds.in"
+        "add+sld_track" -- same as "add" but also include species in the "sld_track" list (see defaults)
+        "remove" -- make 2ndslds.in blank and remove all secondary species from slds.in
+        None -- do nothing, return the "data" that was input as-is
+
+    Parameters
+    ----------
+    data : list
+        list of data from reading `slds.in` from spinup
+    spindir : str
+        location of spinup run for collecting 2ndslds.in
+    outdir : str
+        location of run output for saving updated files
+    spinname : str
+        name of spinup run for collecting 2ndslds.in
+    runname : str
+        name of run for saving updated files
+    secondary_min_rule : str
+        ["add", "add+sld_track", "remove", None] see above for rules
+    sld_track : list
+        list of solid species to track. Ignored unless secondary_min_rule == "add+sld_track"
+    rockdata_dir : str
+        location for SCEPTER-relevant data
+    secondslds_fn : str
+        name of the secondary solids input file (i.e., "2ndslds.in")
+    secondslds_list_name : 
+        name of the secondary solids total list (located in rockdata_dir)
+
+    Returns
+    -------
+    list
+        updated slds.in list ((un)modified `data`)
+    '''
+    # make a shallow copy for safety 
+    data = data.copy()
+    
+    # --- confirm that "secondary_min_rule" is acceptable
+    if secondary_min_rule not in ["add", "remove", "add+sld_track", None]:
+        secondary_min_rule = None
+        print(f"Warning: secondary_min_rule is {secondary_min_rule} but expected one of ['add', 'remove', 'add+sld_track', None]\nAssigning 'None' to secondary_min_rule")
+    if secondary_min_rule == "add+sld_track":
+        if sld_track is None or not isinstance(sld_track, list):
+            secondary_min_rule = "add"
+            print("Warning: sld_track is not a list, but `secondary_min_rule` is `add+sld_track`\nProcessing data as though secondary_min_rule == `add`")
+    
+    # --- go through the secondary_min_rule cases
+    # [ 1: None ] ----------------------------------------
+    if secondary_min_rule is None: 
+        return data
+    
+    # [ 2: "add" ] ---------------------------------------
+    if secondary_min_rule == "add":
+        # read in 2ndslds.in 
+        src = os.path.join(spindir, spinname, secondslds_fn)
+        with open(src, 'r') as file:
+            data_2nd = file.readlines()
+        # add data, omit header
+        data += data_2nd[1:] 
+        if not data[-1].endswith("\n"):
+            data[-1] += "\n"   # add to avoid a messy append
+        return data
+    
+    # [ 3: "add+sld_track" ] -----------------------------
+    if secondary_min_rule == "add+sld_track":
+        # --- first add 2ndslds.in data
+        # read in 2ndslds.in 
+        src = os.path.join(spindir, spinname, secondslds_fn)
+        with open(src, 'r') as file:
+            data_2nd = file.readlines()
+        # add data, omit header
+        data += data_2nd[1:] 
+        if not data[-1].endswith("\n"):
+            data[-1] += "\n"   # add to avoid a messy append
+        # --- now add sld_track
+        data += [item + "\n" for item in sld_track]
+        return data
+    
+    # [ 4: "remove" ] -------------------------------------
+    if secondary_min_rule == "remove":
+        # --- first empty the 2ndslds.in file 
+        # read in 2ndslds.in 
+        src = os.path.join(spindir, spinname, secondslds_fn)
+        dst = os.path.join(outdir, runname, secondslds_fn)
+        with open(src, 'r') as file:
+            data_2nd = file.readlines()
+        data_2nd_empty = data_2nd[0] # just the header
+        # save in dst
+        with open(dst, 'w') as file:
+            file.writelines(data_2nd_empty) 
+        
+        # --- second remove the secondary minerals from slds.in (currently data)
+        src = os.path.join(rockdata_dir, secondslds_list_name)
+        with open(src, 'r') as file:
+            rockdata = file.readlines()
+        # clean both lists
+        minerals_slds = {line.strip() for line in data[1:] if line.strip()}
+        minerals_2ndAll = {line.strip() for line in rockdata[1:] if line.strip()}
+        # take the diff
+        minerals_keep = minerals_slds - minerals_2ndAll
+        # rebuild list 
+        data = [data[0]] + [m + "\n" for m in minerals_keep]
+        return data
+    
+
 def remove_duplicates(input_file: str):
+    """
+    Read the input file, identify and delete duplicate lines.
+    Written for use in the solid input files, where adding
+    solid phases can lead to duplicating the defaults.
+
+    Parameters
+    ----------
+    input_file : str
+        location and name of the input file, like
+        `/my/input/file/is/here.in`
+
+
+    Returns
+    -------
+    """
+    # --- read in the file 
+    with open(input_file, "r") as f:
+        mineral_list = f.readlines()
+    # pull out header and minerals
+    header = mineral_list[0]               # keep header as-is
+    minerals = mineral_list[1:]            # everything else
+
+    # create an empty set and list for output
+    seen = set()
+    cleaned = []
+    # loop through all minerals
+    for line in minerals:
+        name = line.strip()                # remove whitespace, tabs, \n
+        if not name:
+            continue                       # skip empty lines
+        if name not in seen:
+            seen.add(name)
+            cleaned.append(name + "\n")    # re-add newline for output
+
+    # re-combine header and mineral data
+    data_out = [header] + cleaned
+    # remove trailing "\n"
+    if data_out[-1].endswith("\n"):
+        data_out[-1] = data_out[-1].rstrip("\n")
+    
+    # save result 
+    with open(input_file, "w") as f:
+        f.writelines(data_out)
+
+        
+def remove_duplicates_OLD(input_file: str):
     """
     Read the input file, identify and delete duplicate lines.
     Written for use in the solid input files, where adding
