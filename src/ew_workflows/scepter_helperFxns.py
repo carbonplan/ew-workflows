@@ -458,6 +458,7 @@ def setup_solids_custom(
     
     The rules are: 
         "add" -- add the species in "2ndslds.in" to "slds.in"
+        "sld_track" -- add the species in the "sld_track" list to "slds.in"
         "add+sld_track" -- same as "add" but also include species in the "sld_track" list (see defaults)
         "remove" -- make 2ndslds.in blank and remove all secondary species from slds.in
         None -- do nothing, return the "data" that was input as-is
@@ -475,7 +476,7 @@ def setup_solids_custom(
     runname : str
         name of run for saving updated files
     secondary_min_rule : str
-        ["add", "add+sld_track", "remove", None] see above for rules
+        ["add", "add+sld_track", "sld_track", "remove", None] see above for rules
     sld_track : list
         list of solid species to track. Ignored unless secondary_min_rule == "add+sld_track"
     rockdata_dir : str
@@ -519,7 +520,13 @@ def setup_solids_custom(
             data[-1] += "\n"   # add to avoid a messy append
         return data
     
-    # [ 3: "add+sld_track" ] -----------------------------
+    # [ 3: "sld_track" ] --------------------------------
+    if secondary_min_rule == "sld_track":
+        # add sld_track
+        data += [item + "\n" for item in sld_track]
+        return data
+    
+    # [ 4: "add+sld_track" ] -----------------------------
     if secondary_min_rule == "add+sld_track":
         # --- first add 2ndslds.in data
         # read in 2ndslds.in 
@@ -534,7 +541,7 @@ def setup_solids_custom(
         data += [item + "\n" for item in sld_track]
         return data
     
-    # [ 4: "remove" ] -------------------------------------
+    # [ 5: "remove" ] -------------------------------------
     if secondary_min_rule == "remove":
         # --- first empty the 2ndslds.in file 
         # read in 2ndslds.in 
@@ -606,7 +613,7 @@ def remove_duplicates(input_file: str):
     with open(input_file, "w") as f:
         f.writelines(data_out)
 
-        
+
 def remove_duplicates_OLD(input_file: str):
     """
     Read the input file, identify and delete duplicate lines.
