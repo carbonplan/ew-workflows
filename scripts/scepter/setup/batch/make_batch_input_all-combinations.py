@@ -25,7 +25,7 @@ from ew_workflows import batch_helperFxns as bhf
 # %%
 # [ UNIVERSAL ]
 runtype = "monthly_ltm"
-extra_tag = "phReact_v0"
+extra_tag = "phReact_v1"
 pref = f"longrun_{runtype}_{extra_tag}"
 dustsp = "gbas"
 fn = pref + ".csv"
@@ -50,10 +50,10 @@ const_dict = {
     # ---------------------------
 
     # --- PH-REACT SPECIFIC ----
-    "max_time": 100,    # [yr] total amount of time to simulate
-    "duration": 1,    # [yr] duration of each individual run (starts from earliest year)
-    "tph": 7.3,       # [] target pH for each iteration
-    "phnorm_pw": True,  # metric for target pH (true = porewater pH; false = soil pH)
+    # "max_time": 100,    # [yr] total amount of time to simulate
+    # "duration": 1,    # [yr] duration of each individual run (starts from earliest year)
+    # "tph": 7.0,       # [] target pH for each iteration
+    # "phnorm_pw": True,  # metric for target pH (true = porewater pH; false = soil pH)
     # ---------------------------
 
     # --- CONTROL VALUES ---
@@ -108,7 +108,7 @@ all_combinations = { # [ include ctrl values (!!) ]
     "psdrain_meanRad": [75/1e6, 300/1e6],    # [m]
     "secondary_min_rule": ["add+sld_track", "remove"],
     "poro_updated": [0.25, 0.35, 0.45],    # initial porosity
-    "dustrate_2nd": [0, 5, 35], # [g/m2/yr] (=t/ha/yr * 100)
+    # "dustrate_2nd": [0, 5, 35], # [g/m2/yr] (=t/ha/yr * 100)
     "dustrate": [x*100 for x in [0.1, 0.75, 2, 5, 15, 40]],
 }
 # ==========================================================================
