@@ -495,13 +495,13 @@ def setup_solids_custom(
     data = data.copy()
     
     # --- confirm that "secondary_min_rule" is acceptable
-    if secondary_min_rule not in ["add", "remove", "add+sld_track", None]:
+    if secondary_min_rule not in ["add", "remove", "sld_track", "add+sld_track", None]:
         secondary_min_rule = None
-        print(f"Warning: secondary_min_rule is {secondary_min_rule} but expected one of ['add', 'remove', 'add+sld_track', None]\nAssigning 'None' to secondary_min_rule")
-    if secondary_min_rule == "add+sld_track":
+        print(f"Warning: secondary_min_rule is {secondary_min_rule} but expected one of ['add', 'remove', 'sld_track', 'add+sld_track', None]\nAssigning 'None' to secondary_min_rule")
+    if secondary_min_rule in ["add+sld_track", "sld_track"]:
         if sld_track is None or not isinstance(sld_track, list):
             secondary_min_rule = "add"
-            print("Warning: sld_track is not a list, but `secondary_min_rule` is `add+sld_track`\nProcessing data as though secondary_min_rule == `add`")
+            print(f"Warning: sld_track is not a list, but `secondary_min_rule` is {secondary_min_rule}, requiring it...\nProcessing data as though secondary_min_rule == `add`")
     
     # --- go through the secondary_min_rule cases
     # [ 1: None ] ----------------------------------------
