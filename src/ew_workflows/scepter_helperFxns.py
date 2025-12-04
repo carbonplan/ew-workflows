@@ -568,6 +568,82 @@ def setup_solids_custom(
         return data
     
 
+# --- write as a function
+def update_dust_input(
+        src: str,
+        dstpath: str,
+        added_sp2: str,
+        fdust2: float,
+        fdust: float,
+        multi_sp_feedstock: bool,
+        save_fn: str="dust.in",
+        round_dx: int = 4 ,
+):
+    """
+    Read dust.in from `data`, update it to include the 
+    secondary dust, save it to the rundir. 
+
+    This is only needed in v1.0.2 when seasonality is on. 
+
+    Parameters
+    ----------
+    src : str
+        location of dust.in file (usually modeldir/data/*.in)
+    dstpath : 
+        location of rundir (we append the filename in the fxn)
+    added_sp2 : str
+        name of species to add
+    fdust2 : float
+        [g/m2/yr] amount of dust to add
+    fdust : float
+        [g/m2/yr] amount of dust for primary species
+    multi_sp_feedstock : bool
+        whether multiple species are in the src file (required to modify the ratio of dust1 to dust2)
+    save_fn : str
+        name of the dust.in file to save in rundir
+    round_dx : int
+        number of decimals allowed for rounding of the secondary dust in `dust.in`
+    """
+    # get the filename to update the destination
+    # fn = os.path.basename(src)
+    # dst = os.path.join(dstpath, fn)
+    dst = os.path.join(dstpath, save_fn)
+    
+    # find the ratio that we want for the new dust
+    dustratio_12 = fdust / fdust2 
+
+    # open data from source
+    data = []
+    with open(src, "r") as f:
+        for line in f:
+            data.append(line) 
+
+    # get dust1 amount
+    if not multi_sp_feedstock: # then take the first value after the header
+        if len(data) > 2:
+            print(f"Warning: Expecting 1 feedstock, but `dust.in` has {len(data)-1} lines, implying {len(data)-1} species")
+        dust1_value = float(data[1].split()[1])
+    else: # otherwise add up all the dust values
+        dust1_value = 0.
+        for tmpline in data[1:]:
+            dust1_value += float(tmpline.split()[1])
+
+    # confirm the data ends with "\n" before adding a new line
+    if not data[-1].endswith("\n"):
+        data[-1] += "\n"
+
+    # write the new line 
+    dust2_value = dust1_value / dustratio_12
+    new_line = f"{added_sp2}\t{str(round(dust2_value, round_dx))}"
+
+    # append the new line
+    data += [new_line]
+
+    # write to dst
+    with open(dst, "w") as f:
+        f.writelines(data)
+        
+
 def remove_duplicates(input_file: str):
     """
     Read the input file, identify and delete duplicate lines.
