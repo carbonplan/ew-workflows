@@ -498,9 +498,9 @@ def rockdiss_in(dfin: pd.DataFrame,
     dfin_cols_to_keep : list
         list of columns from dfin that we want to add to the final dfs
         (generally the groups / dims for later xr datasets)
-    feedstock : str
+    feedstock : str or None
         name of the feedstock to pull from (e.g., 'cc', 'gbas', 'amnt', etc)
-        (can usually find this in dfin)
+        (can usually find this in dfin) if None, then use "dustsp" in dfin. 
     subdir : str
         name of the directory within file_path that holds the
         .pkl files
@@ -526,6 +526,11 @@ def rockdiss_in(dfin: pd.DataFrame,
     # loop
     for run in range(len(dfin)):
         tdf = dfin.iloc[run]
+        # find feedstock dustsp if not defined 
+        if feedstock is None:
+            if "dustsp" not in dfin.columns:
+                raise ValueError("Feedstock not defined and dustsp is not in `dfin` -- can't tell which feedstock to use! ")
+            feedstock = dfin['dustsp'].iloc[run]
         this_path = os.path.join(outdir, tdf['newrun_id_full'], subdir)
         tmpfn = f'{rock_prefix}{feedstock}.pkl'
         fn_path = os.path.join(this_path, tmpfn)
@@ -695,7 +700,7 @@ def cdr_int_per_group(
     # --- OPTION 4: "carbalk_flx" --------------------
     if "carbalk_flx" in calc_list:
         print("solving carbalk_flx")
-        outdict['carbalk_flx'] = carbalk_flx_cdr()
+        outdict_full['carbalk_flx'] = carbalk_flx_cdr()
     
     # --- OPTION 5: "rockdiss" -----------------------
     if "rockdiss" in calc_list:
@@ -1972,8 +1977,14 @@ def read_profile_nc(
             print(f"Warning: batch profile processing {fn_path} could not be found.. returning NA")
             tmpds = None
         else:
-            with fs.open(fn_path, mode='rb') as fnx:
-                tmpds = xr.open_dataset(fnx)
+            # [ worked on nebari, but not on local ! ]
+            # with fs.open(fn_path, mode='rb') as fnx:
+            #     tmpds = xr.open_dataset(fnx)
+            # [ updated for local (netcdf4 can't read from s3 so we need h5netcdf !) ]
+            tmpds = xr.open_dataset(
+                fn_path,
+                engine="h5netcdf"
+            )
     # -----------------------------
     else:
         if not os.path.exists(fn_path):
@@ -2607,3 +2618,32 @@ def save_variables_to_file(
                     file.write(f"  {var_name}: {value}\n")
                 file.write("\n")  # Adds a blank line between tests
 
+
+# quick control run check
+def find_control_runs(
+        dfin: pd.DataFrame,
+        ctrl_conditions: dict,
+)->pd.DataFrame:
+    """
+    Identify control runs based on a set of control 
+    conditions in the dictionary
+
+    Parameters
+    ----------
+    dfin : pd.DataFrame
+        the batch.csv file
+    ctrl_conditions : dict
+        dictionary identifying control conditions
+        example: = {"dustrate": 0}
+    
+    Returns
+    -------
+    pd.DataFrame
+    """
+    mask = pd.Series(True, index=dfin.index)
+    for col, val in ctrl_conditions.items():
+        mask &= (dfin[col] == val)
+    
+    dfin["ctrl_run"] = mask
+    # return result
+    return dfin

@@ -4,8 +4,10 @@
 # conditions. 
 # 
 # Define the experimental conditions and the sites, 
-# and simulate all combinations of inputs across 
-# all sites
+# and simulate *some* combinations of inputs across 
+# ( some inputs are explored one-at-a-time, and 
+#   others, like dustrate, are explored for all 
+#   values across all cases )
 # 
 # T Kukla ; nov 2025
 # 
@@ -24,12 +26,13 @@ from ew_workflows import batch_helperFxns as bhf
 
 # %%
 # [ UNIVERSAL ]
-EXP_SET = "longrun"
+EXP_SET = "longrunOAT_annClim"
 runtype = "monthly_ltm"
-extra_tag = "annual_v1"
-pref = f"longrun_{runtype}_{extra_tag}"
-dustsp = "gbas"
+extra_tag = "annual_v0"
+pref = f"{EXP_SET}_{runtype}_{extra_tag}"
 fn = pref + ".csv"
+dustsp = "gbas"
+
 # save preferences
 savepath_batch = "s3://carbonplan-carbon-removal/ew-workflows-data/scepter/batch/"
 multi_run_split = False   # whether to split the csv into multiple files
@@ -58,10 +61,10 @@ const_dict = {
     # ---------------------------
 
     # --- CONTROL VALUES ---
-    "secondary_min_rule": "add+sld_track",
+    "psdrain_meanRad": 75/1e6,
+    "secondary_min_rule": "sld_track",
     "poro_updated": 0.35,
     "dustrate_2nd": 0.,    # [g/m2/yr] (=t/ha/yr * 100)
-    "dustrate": 0.75 * 100, # [g/m2/yr] (=t/ha/yr * 100)
 
     # --- sometimes changed ---
     "imix": 3,    # mixing style (1=fickian; 2=homogeneous; 3=tilling)
@@ -105,12 +108,11 @@ const_dict = {
 # %% 
 # [ SIMULATION GROUPS ]
 # ==========================================================================
-all_combinations = { # [ include ctrl values (!!) ]
-    "psdrain_meanRad": [75/1e6, 300/1e6],    # [m]
-    "secondary_min_rule": ["add+sld_track", "remove"],
-    "poro_updated": [0.25, 0.35, 0.45],    # initial porosity
-    # "dustrate_2nd": [0, 5, 35], # [g/m2/yr] (=t/ha/yr * 100)
-    "dustrate": [x*100 for x in [0.1, 0.75, 2, 5, 15, 40]],
+individual_cases = { 
+    # [ Each element is one (and only) tweak from ctrl ]
+    "psdrain_meanRad": [10/1e6, 300/1e6],    # [m]
+    "secondary_min_rule": ["remove"],
+    "poro_updated": [0.25, 0.45],    # initial porosity
 }
 # ==========================================================================
 
@@ -132,17 +134,31 @@ by_site = {   # values must have same order as 'sites' var
     ]  # these serve as the site name when there is no cliamte file to use
 }
 
+
+# = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = =
+
+# %% 
+# [ ALL COMBINATIONS OF THESE ]
+# ==========================================================================
+all_combinations = { # [ include ctrl values (!!) ]
+    # "dustrate_2nd": [0, 5, 35], # [g/m2/yr] (=t/ha/yr * 100)
+    "dustrate": [x*100 for x in [0.1, 0.75, 2, 5, 15, 40]],
+}
+# ==========================================================================
+
 # %% 
 # --- BUILD DATAFRAME
-df = bhf.build_df_all_combinations(
+df = bhf.build_df_one_at_a_time(
     pref, 
     const_dict, 
     sites, 
     by_site, 
     all_combinations, 
+    individual_cases,
     add_ctrl=True,
     add_index=True,
 )
+
 
 # %%
 # --- SAVE
@@ -151,6 +167,4 @@ bhf.save_df(df, savepath_batch, fn, multi_run_split, max_iters_per_set)
 # %%
 pref
 # %%
-
-
 

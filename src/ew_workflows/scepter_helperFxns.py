@@ -700,8 +700,235 @@ def check_scepter_exec(
         print(f"{scepter_exec_name} already exists and is executable in {rundir}.")
 
 
-
 def create_dust_input(
+    outdir: str, 
+    runname: str,
+    dust1_dict: dict,
+    dust2_dict: dict,
+    t_add: float,
+    taudust: float,
+    output_filename: str = "Dust_temp.in",
+    dryrun: bool=False,
+    taudust_default: float = 0.05,
+)->str:
+    """
+    Create a tab-delimited dust input file for the model. The dust input file
+    (`Dust_temp.in`) has two columns: time (years) and the unscaled dust 
+    application flux (g/m2/yr). The model figures out the true application 
+    flux for each species by multiplying the unscaled flux from `Dust_temp.in` 
+    by the value in `dust.in` for that given species. 
+
+    - Reads time grid from: <outdir>/<runname>/q_temp.in
+      (expects whitespace-separated file, time in first column, units = years).
+    - Reads annual dust fluxes from the dust lists
+    - Solves the un-scaled flux:
+        Note: dust.in values are relative weight ratios of each species.
+        they don't have to add to one, but total application is 
+          `Dust_temp.in` x `dust.in`[species_n] 
+        for each species. To solve for the total g/m2/yr to spread across
+        Dust_temp.in, we can use 
+          fdust[species_n] / `dust.in`[species_n]
+        which should yield the same result for all feedstocks if everything
+        was done correctly. 
+    - t_add: fractional time into each year when the dust is applied (0.0 - 1.0)
+    - The function outputs rates (g/m2/yr) for each time step such that integrating
+      rate * dt over the distribution window results in the annual mass equal to the
+      dust dict amount. The dust is spread over a window of length:
+          L = max(duration_from_frame_in, timestep_at_event)
+      and partial overlaps with irregular timesteps are handled.
+    - Writes file with header "# time(yr)\tdust(g/m2/yr)"
+      and returns the full path of the created file.
+
+    Returns:
+        path to created file (str)
+    Raises:
+        FileNotFoundError if q_temp.in or frame.in cannot be found.
+        ValueError for malformed files or invalid t_add.
+    """
+    if not (0.0 <= t_add <= 1.0):
+        raise ValueError("t_add must be between 0 and 1 (fraction of year).")
+    # check that paths are valid
+    qtemp_path = os.path.join(outdir, runname, "q_temp.in") # for time grid
+    dust_path = os.path.join(outdir, runname, "dust.in")  # for application rates
+    if not os.path.isfile(qtemp_path):
+        raise FileNotFoundError(f"q_temp.in not found at {qtemp_path}")
+    if not os.path.isfile(dust_path):
+        raise FileNotFoundError(f"dust.in not found at {dust_path}")
+    # assign taudust
+    if not taudust:
+        taudust = taudust_default
+
+    # ---------------------
+    # Read times from q_temp.in (first column)
+    # ---------------------
+    times = []
+    with open(qtemp_path, "r") as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            parts = line.split()
+            try:
+                t = float(parts[0])
+            except Exception:
+                # skip header rows or malformed lines
+                continue
+            times.append(t)
+    if len(times) < 1:
+        raise ValueError("No time values found in q_temp.in (first column).")
+    times = np.array(times, dtype=float)
+    # sort just in case
+    sort_idx = np.argsort(times)
+    times = times[sort_idx]
+
+    # compute timestep durations dt for each index (interval [t[i], t[i]+dt[i]))
+    n = times.size
+    dt = np.empty(n, dtype=float)
+    if n == 1:
+        # single time point: assume a default small dt or use 1.0 yr?
+        # We'll default to dt = 1.0 for safety (user rarely has single timepoint)
+        dt[:] = 1.0
+    else:
+        dt[:-1] = times[1:] - times[:-1]
+        # last dt use same as previous (reasonable default)
+        dt[-1] = dt[-2] if n >= 2 else dt[0]
+
+    # ---- build output dict if dryrun
+    if dryrun:
+        outdict = {
+            "time_yr": times,
+            "dt": dt,
+        }
+
+    # ---------------------
+    # get total amount of dust to add
+    # ---------------------
+    # Note: dust.in values are relative weight ratios of each species.
+    # they don't have to add to one, but total application is 
+    #   `Dust_temp.in` x `dust.in`[species_n] 
+    # for each species. To solve for the total g/m2/yr to spread across
+    # Dust_temp.in, we can use 
+    #   fdust[species_n] / `dust.in`[species_n]
+    # which should yield the same result for all feedstocks if everything
+    # was done correctly. 
+
+    # --- open dust.in
+    dustdata = []
+    with open(dust_path, "r") as f:
+        for dat in f:
+            dustdata.append(dat)
+    # --- compare to input dicts
+    #     stop when we get a match
+    for line in dustdata[1:]:
+        thislist = line.split()
+        if thislist[0] in dust1_dict.keys():
+            dust_temp_x = dust1_dict[thislist[0]] / float(thislist[1])
+            break
+        elif thislist[0] in dust2_dict.keys():
+            dust_temp_x = dust2_dict[thislist[0]] / float(thislist[1])
+            break
+
+    # Prepare output arrays (rates in g/m2/yr at each time point)
+    rates = np.zeros_like(times, dtype=float)
+    cumrates = np.zeros_like(times, dtype=float) # for dryrun only
+
+    # Helper: find index i where times[i] <= t_event < times[i] + dt[i]
+    def find_interval_index(t_event: float) -> Optional[int]:
+        # if event is before first time or after last interval, return None
+        if t_event < times[0] or t_event >= times[-1] + dt[-1]:
+            return None
+        # binary search for i such that times[i] <= t_event < times[i] + dt[i]
+        lo = 0
+        hi = n - 1
+        while lo <= hi:
+            mid = (lo + hi) // 2
+            start = times[mid]
+            end = start + dt[mid]
+            if start <= t_event < end:
+                return mid
+            if t_event < start:
+                hi = mid - 1
+            else:
+                lo = mid + 1
+        # fallback linear search
+        for i in range(n):
+            if times[i] <= t_event < times[i] + dt[i]:
+                return i
+        return None
+
+    # Determine which integer years to consider: from floor(min time) up to floor(max_time)
+    year_start = math.floor(times[0])
+    # consider events up to last time (if last event falls exactly at end, included if within last+dt)
+    year_end = math.floor(times[-1])  # inclusive
+    # but also include year_end+1 if t_add places event within final interval
+    # We'll loop year from year_start to year_end inclusive, then check event_time bounds
+
+    for year in range(year_start, year_end + 1):
+        total1 = 0.  # for dryrun only
+        t_event = float(year) + float(t_add)
+        idx = find_interval_index(t_event)
+        if idx is None:
+            # event outside simulation window -> skip
+            continue
+        # local timestep containing event
+        dt_event = dt[idx]
+        # spread length L = max(dt_event, duration_min)
+        L = max(float(dt_event), float(taudust))
+        # (remove floating point issues w/ L)
+        L = np.round(L, 6)
+        if dryrun: # troubleshoot
+            print(f"Spread length: {L}")
+        # distribution window [start, end)
+        start = t_event
+        end = t_event + L
+
+        # For each timestep, compute overlap with [start,end) and allocate proportionally
+        if dust_temp_x != 0.0:
+            # total mass to allocate (per year) is dust_temp_x [g/m2/yr]
+            A = float(dust_temp_x)
+            # contribution mass per timestep = A * (overlap / L)
+            # rate contribution = contribution_mass / dt[i]  (units g/m2/yr)
+            for i in range(n):
+                step_start = float(times[i])
+                step_end = step_start + float(dt[i])
+                overlap = max(0.0, min(step_end, end) - max(step_start, start))
+                if overlap > 0.0:
+                    contrib_mass = A * (overlap / L)  # g/m2  (mass applied this year portion)
+                    # convert to rate for this step (g/m2/yr)
+                    rate_add = contrib_mass / float(dt[i])
+                    rates[i] += rate_add
+                total1 += rates[i]
+                cumrates[i] = total1
+
+    # Build header and only include columns for requested feedstocks
+    headers: List[str] = ["time(yr)\tdust(g/m2/yr)"]
+    col_arrays: List[np.ndarray] = [times]
+    col_arrays.append(rates)
+
+    if dryrun:
+        outdict["rate_gm2yr"] = rates
+        outdict["cumrate_gm2yr"] = cumrates
+        # return result
+        return pd.DataFrame(outdict)
+    else:
+        # Write file
+        outpath = os.path.join(outdir, runname, output_filename)
+        with open(outpath, "w") as fout:
+            fout.write("# " + "\t".join(headers) + "\n")
+            # write formatted rows; use high precision
+            fmt = "{:.8e}"
+            nrows = times.size
+            for i in range(nrows):
+                row_vals = []
+                for arr in col_arrays:
+                    # arr may contain float values
+                    row_vals.append(fmt.format(float(arr[i])))
+                fout.write("\t".join(row_vals) + "\n")
+
+        return outpath
+
+
+def create_dust_input_multiSp(
     outdir: str,
     runname: str,
     dustname1: Optional[str] = None,
@@ -711,6 +938,16 @@ def create_dust_input(
     dryrun: bool = False,
 ) -> str:
     """
+    [
+    -------- DOES NOT WORK FOR V1.0.2 OR V1.0.1 !!  --------
+    v1.0.1 doesn't use a Dust_temp.in file, and v1.0.2 requires
+    a 2-column file where columns are "time(yr)" and "dust(g/m2/yr)"
+    where this represents the total dust flux. It also requires no
+    specified dusts in frame.in and instead Dust_temp.in coordinates
+    with dust.in to calculate the species-specific dust flux. 
+    ---------------------------------------------------------
+    ]
+
     Create a tab-delimited dust input file for the model.
 
     - Reads time grid from: <outdir>/<runname>/q_temp.in

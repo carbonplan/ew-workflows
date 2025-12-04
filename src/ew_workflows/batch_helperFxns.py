@@ -256,6 +256,113 @@ def build_df_all_combinations(
     return df
 
 
+def build_df_one_at_a_time(
+        pref: str,
+        const_dict: dict,
+        sites: list,
+        by_site: dict,
+        all_combinations: dict,
+        individual_cases: dict,
+        add_ctrl: bool=True,
+        add_index: bool = True,
+)-> pd.DataFrame:
+    """
+    build dataframe where we perturb one param at a time
+    from the "individual_cases". Each individual case is 
+    repeated for each site and each "all_combinations" 
+    combo. 
+
+    Parameters
+    ----------
+    pref : str
+        prefix for each run name
+    const_dict : dict
+        dictionary for the values that are held constant 
+        across all simulations
+    sites : list
+        list of the site names across which to run the simulations
+    by_site : dict
+        dictionary for all the values that only vary by site
+        (each value should be a list of len(sites) where the 
+        first value corresponds to the first site indexed, and 
+        so on)
+    all_combinations : dict
+        dictionary for all the values to vary such that every
+        unique combination of these values is tested for each 
+        site
+    individual_cases : dict
+        dictionary for each one-at-a-time perturbation
+    add_ctrl : bool
+        [True | False] whether to add a control simulation with zero 
+        dust application for each site (NOTE, you may not want to add 
+        0 to your dust app rate list because it will needlessly repeat
+        for every other var in all_combinations)
+
+    Returns
+    -------
+    pd.DataFrame
+        This is the file that will become the .csv batch input. Each column
+        should be a variable that the SCEPTER python scripts can recognize 
+        (no typos!)
+    """
+    # [1] generate all combinations from the dict's vectors
+    all_combos_list = list(itertools.product(*all_combinations.values()))
+    # make dataframe and repeat values for the number of sites
+    df = pd.DataFrame(all_combos_list * len(sites), columns=all_combinations.keys())
+
+    # [2] add site-specific vars
+    # add site labels
+    df['site'] = [site for site in sites for _ in range(len(all_combos_list))]
+    # for each key in by_site, alternate the values for the corresponding site
+    for key, values in by_site.items():
+        df[key] = [values[site_idx] for site_idx in range(len(sites)) for _ in range(len(all_combos_list))]
+
+    # [3] add constant vars that do not appear in "all_combinations"
+    unique_keys = {k: v for k, v in const_dict.items() if k not in df.columns}
+    control_keys = {k: v for k, v in const_dict.items() if k in df.columns}
+    for key, value in unique_keys.items():
+        df[key] = value
+
+    # [4] repeat for all individual cases
+    # each key in `individual_cases` creates a *set* of additional simulations
+    individual_override_list = []
+    for key, values in individual_cases.items():
+        for v in values:
+            individual_override_list.append({key: v})
+    dfs = []
+    for override in individual_override_list:
+        df_new = df.copy()
+        # apply override to all rows
+        for k, v in override.items():
+            df_new[k] = v
+        dfs.append(df_new)
+    df = pd.concat(dfs, ignore_index=True)
+
+    # [5] add control cases (no dust application) if add_ctrl is True
+    if add_ctrl:
+        # loop through sites
+        for thissite in reversed(sites):
+            tmp_row = df[df['site'] == thissite].iloc[0]
+            # set dust to zero
+            tmp_row['dustrate'] = 0.0
+            # add control keys 
+            for key, value in control_keys.items():
+                tmp_row[key] = value
+            # concat to top row
+            df = pd.concat([pd.DataFrame([tmp_row]), df], ignore_index=True)
+
+    # [6] add the newrun ID
+    df = newrun_id_fxn(df, pref, None, add_index=add_index)
+    # check that all the run ids are unique and return a warning if not
+    if not df['newrun_id'].is_unique:
+        print("YIKES!!!")
+        # warnings.warn("Column newrun_id contains duplicate entries. The latter run ID will likely overwrite the former")
+
+    # return result
+    return df
+
+
+
 # [2] MAKE NEWRUN ID
 def newrun_id_fxn(df: pd.DataFrame, pref: str, clim_tag: str, add_index: bool=False) -> pd.DataFrame:
     """
