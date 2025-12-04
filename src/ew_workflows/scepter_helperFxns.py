@@ -642,7 +642,7 @@ def update_dust_input(
     # write to dst
     with open(dst, "w") as f:
         f.writelines(data)
-        
+
 
 def remove_duplicates(input_file: str):
     """
@@ -1720,6 +1720,116 @@ def dustflx_calc(
     df['dustsp1'] = dustsp
     df['dustsp2'] = dustsp_2nd
     
+    # save the result
+    df.to_csv(  # default is mode='w' which will overwrite the existing file (that's fine because we've merged it with the new data)
+        file_path, index=None, sep="\t"
+        )  
+
+
+# modify the flx/dust.txt file to get total dust flux over time 
+def dustflx_calc_v102(       # [ updated for v1.0.2 ]
+        outdir: str,
+        runname_field: str,
+        dustsp: str,
+        dustsp_2nd: str,
+        fdust: float,
+        fdust2: float,
+        multi_sp_feedstock: float,
+        dustsubdir: str = "flx",        # [ DEFAULT ]
+        dustname: str = "dust.txt",     # [ DEFAULT ]
+        dustname_in: str = "dust.in",   # [ DEFAULT ]
+):
+    """
+    SCEPTER's default dust file (*/flx/dust.txt) shows time and the relative amount
+    of dust that gets applied. We use the dust flux to compute the timeseries
+    of dust application and the integrated dust application. Nothing gets returned,
+    but the updated dust.txt file gets saved. 
+
+    Parameters
+    ----------
+    outdir : str
+        output directory for SCEPTER results (ex: "home/name/SCEPTER/scepter_output")
+    runname_field : str
+        name of the directory for the SCEPTER field run (for now, we're not applying 
+        any changes to the lab dust fluxes)
+    dustsp : str
+        name of the primary dust species (e.g., "cc" or "gbas")
+    dustsp_2nd : str
+        name of the secondary dust species (e.g., "amnt")
+    fdust1 : float
+        [g m2 yr] amount of primary dust applied each year 
+    fdust2 : float
+        [g m2 yr] amount of secondary dust applied each year 
+    multi_sp_feedstock : bool
+        [True] if the dust.in file for the feedstock has more than one mineral, false otherwise
+    dustsubdir : str
+        subdirectory of dust.txt file (default = "flx")
+    dustname : str
+        name of the dust timeseries (default = "dust.txt")
+    dustname_in : str
+        name of the dust input file (default = "dust.in")
+
+    Results
+    -------
+    """
+    # read in the dust flux dataframe
+    file_path = os.path.join(outdir, runname_field, dustsubdir, dustname)
+    df = preprocess_txt(file_path)
+    # change second column name for consistency with v1.0.2
+    df.columns.values[1] = "dust(relative_to_average)"
+
+    # read in the `dust.in` file
+    file_path_dustin = os.path.join(outdir, runname_field, dustname_in)
+    dustdata = []
+    with open(file_path_dustin, "r") as f:
+        for line in f:
+            dustdata.append(line) 
+
+    # make sure dust fluxes are numbers
+    if not isinstance(fdust, (int, float)):
+        try:
+            fdust = float(fdust)
+        except:
+            fdust = 0
+    if not isinstance(fdust2, (int, float)):
+        try:
+            fdust2 = float(fdust2)
+        except:
+            fdust2 = 0
+
+
+    # --- get scaling coefficients for dust flux calculation
+    if multi_sp_feedstock:  # then assume all but the last value is dust1 (unless dust2 is None)
+        if not dustsp_2nd: # then all are dust1
+            dust1_coeff = 0
+            for thisline in dustdata[1:]:
+                dust1_coeff += float(thisline.split()[1])
+            dust1_coeff = round(dust1_coeff, 6) # round to handle floating point err
+        else: # then assume last value is dust2
+            dust2_coeff = float(dustdata[-1].split()[1])
+            dust1_coeff = 0
+            tmpdat = dustdata[:-1]
+            for thisline in tmpdat[1:]:
+                dust1_coeff += float(thisline.split()[1])
+            dust1_coeff = round(dust1_coeff, 6) # round to handle floating point err
+    else:
+        dust1_coeff = float(dustdata[1].split()[1])
+        if dustsp_2nd:
+            dust2_coeff = float(dustdata[-1].split()[1])
+
+    # --- add columns
+    df['dust1_STATIC'] = fdust
+    df['dust2_STATIC'] = fdust2
+    df['dust1_g_m2_yr'] = df['dust(relative_to_average)'] * dust1_coeff
+    df['dust2_g_m2_yr'] = df['dust(relative_to_average)'] * dust2_coeff
+    # compute integrated dust timeseries
+    df['int_dust1_g_m2_yr'] = cumulative_trapezoid(df['dust1_g_m2_yr'], df['time'], initial=0)
+    df['int_dust2_g_m2_yr'] = cumulative_trapezoid(df['dust2_g_m2_yr'], df['time'], initial=0)
+
+    # add dust species info
+    df['dustsp1'] = dustsp
+    df['dustsp2'] = dustsp_2nd
+
     # save the result
     df.to_csv(  # default is mode='w' which will overwrite the existing file (that's fine because we've merged it with the new data)
         file_path, index=None, sep="\t"
