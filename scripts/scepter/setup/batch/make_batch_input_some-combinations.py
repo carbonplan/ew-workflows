@@ -26,12 +26,13 @@ from ew_workflows import batch_helperFxns as bhf
 
 # %%
 # [ UNIVERSAL ]
-EXP_SET = "longrunOAT_annClim"
+EXP_SET = "longrunOAT_noAmnt"
 runtype = "monthly_ltm"
 extra_tag = "annual_v0"
 pref = f"{EXP_SET}_{runtype}_{extra_tag}"
 fn = pref + ".csv"
 dustsp = "gbas"
+spinup_tag = "_no-amnt"
 
 # save preferences
 savepath_batch = "s3://carbonplan-carbon-removal/ew-workflows-data/scepter/batch/"
@@ -87,6 +88,7 @@ const_dict = {
     "singlerun_seasonality": True,
     'climatedir': 's3://carbonplan-carbon-removal/ew-workflows-data/scepter/clim/era5_2006-01-01_2020-12-31/',   # climate input main directory
     "skip_lab_run": True,
+    'spindir': "s3://carbonplan-carbon-removal/SCEPTER/scepter_output/spinups/", 
 
     # # --- update CEC?
     # 'cec_update_from_spinup': True,   # [True, False] whether to update CEC and alpha vars relative to the spinup value (False means no change to cec.in is made)
@@ -122,10 +124,10 @@ individual_cases = {
 # %% 
 # [ BY SITE ]
 # ==========================================================================
-sites = ['4_central_valley', '264_cornbelt', '390_southeast', '468_northeast']
+sites = [f'4_central_valley', f'264_cornbelt', f'390_southeast', f'468_northeast']
 climate_timestep = runtype   # ( suffix for dirs here: s3://carbonplan-carbon-removal/ew-workflows-data/scepter/clim/era5_2006-01-01_2020-12-31/ )
 by_site = {   # values must have same order as 'sites' var
-    "spinrun": sites,
+    "spinrun": [f'{site}{spinup_tag}' for site in sites],
     "climatefiles": [
         f"4_central_valley_{climate_timestep}", 
         f"264_cornbelt_{climate_timestep}", 

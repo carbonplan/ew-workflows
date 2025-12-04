@@ -612,7 +612,7 @@ def update_dust_input(
     # find the ratio that we want for the new dust
     # (prevent divide by zero error)
     need_to_solve_dust2 = True # track whether we have dust2 set
-    if added_sp2: # then we need a dust ratio
+    if added_sp2 is not None: # then we need a dust ratio
         if fdust2 <= 0: # if dust flux is zero then set dust2_value to zero
             need_to_solve_dust2 = False
             dust2_value = 0
@@ -1785,6 +1785,9 @@ def dustflx_calc_v102(       # [ updated for v1.0.2 ]
     # read in the dust flux dataframe
     file_path = os.path.join(outdir, runname_field, dustsubdir, dustname)
     df = preprocess_txt(file_path)
+    # save the original for safety 
+    save_orig = os.path.join(outdir, runname_field, dustsubdir, "dust_ORIG.txt")
+    df.to_csv(file_path, index=None, sep="\t")  
     # change second column name for consistency with v1.0.2
     df.columns.values[1] = "dust(relative_to_average)"
 
