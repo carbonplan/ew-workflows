@@ -1787,7 +1787,7 @@ def dustflx_calc_v102(       # [ updated for v1.0.2 ]
     df = preprocess_txt(file_path)
     # save the original for safety 
     save_orig = os.path.join(outdir, runname_field, dustsubdir, "dust_ORIG.txt")
-    df.to_csv(file_path, index=None, sep="\t")  
+    df.to_csv(save_orig, index=None, sep="\t")  
     # change second column name for consistency with v1.0.2
     df.columns.values[1] = "dust(relative_to_average)"
 
