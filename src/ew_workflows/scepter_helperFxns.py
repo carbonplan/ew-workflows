@@ -610,7 +610,14 @@ def update_dust_input(
     dst = os.path.join(dstpath, save_fn)
     
     # find the ratio that we want for the new dust
-    dustratio_12 = fdust / fdust2 
+    # (prevent divide by zero error)
+    need_to_solve_dust2 = True # track whether we have dust2 set
+    if added_sp2: # then we need a dust ratio
+        if fdust2 <= 0: # if dust flux is zero then set dust2_value to zero
+            need_to_solve_dust2 = False
+            dust2_value = 0
+        else:
+            dustratio_12 = fdust / fdust2 
 
     # open data from source
     data = []
@@ -628,16 +635,19 @@ def update_dust_input(
         for tmpline in data[1:]:
             dust1_value += float(tmpline.split()[1])
 
-    # confirm the data ends with "\n" before adding a new line
-    if not data[-1].endswith("\n"):
-        data[-1] += "\n"
+    # --- add dust 2
+    if added_sp2:
+        # confirm the data ends with "\n" before adding a new line
+        if not data[-1].endswith("\n"):
+            data[-1] += "\n"
 
-    # write the new line 
-    dust2_value = dust1_value / dustratio_12
-    new_line = f"{added_sp2}\t{str(round(dust2_value, round_dx))}"
+        # write the new line 
+        if need_to_solve_dust2:
+            dust2_value = dust1_value / dustratio_12
+        new_line = f"{added_sp2}\t{str(round(dust2_value, round_dx))}"
 
-    # append the new line
-    data += [new_line]
+        # append the new line
+        data += [new_line]
 
     # write to dst
     with open(dst, "w") as f:
