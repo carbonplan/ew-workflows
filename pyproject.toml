@@ -5,6 +5,7 @@ version = "0.1.0"
 
 requires-python = ">=3.11"
 dependencies = [
+    "cartopy>=0.25.0",
     "cmocean>=4.0.3",
     "coiled>=1.120.0",
     "distributed>=2024.8.0",

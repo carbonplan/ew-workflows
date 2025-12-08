@@ -26,12 +26,12 @@ from ew_workflows import batch_helperFxns as bhf
 
 # %%
 # [ UNIVERSAL ]
-EXP_SET = "lrOAT_hommix"
+EXP_SET = "lrOAT_ann_psdfull"
+dustsp = "gbas"
 runtype = "monthly_ltm"
 extra_tag = "v0"
 pref = f"{EXP_SET}_{runtype}_{extra_tag}"
 fn = pref + ".csv"
-dustsp = "gbas"
 spinup_tag = "_no-amnt"  # "_no-amnt"
 
 # save preferences
@@ -72,7 +72,7 @@ const_dict = {
     "cec_adsorption_on": True, 
 
     # --- surface area / poro / psd rules
-    "include_psd_full": False, 
+    "include_psd_full": True, 
     "include_psd_bulk": False,
     'psdrain_log10_sd': 0.05, # [] log 10 standard deviation for psd
     'psdrain_wt': 1.0,       # [] weight for the psd
