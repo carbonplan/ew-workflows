@@ -66,7 +66,7 @@ molar_mass_dict = {
     'g3': 30,
     'amnt': 80.043,  # Kanzaki et al., 2023, table 3
     # --- see treatment of gbas below (not in table 1 of Kanzaki et al., 2022)
-    'gbas': 120.496
+    'gbas': 120.496,
     # Note: gbas molar mass depends on whether Dmod_bas_cmp is defined in the makefile! 
     # if the makefile has `CPFLAGS       += -Dmod_basalt_cmp`, then scepter.f90
     # uses basalt_defines.h by default (see scepter.f90 lines ~81, 82). Otherwise, 
@@ -92,7 +92,32 @@ molar_mass_dict = {
     # fe2:0.1251095225 * 71.846       = 8.9886
     # 
     # SUM --------------------------> = 120.496
-}
+    # ---------------------------------------------------------------------------------
+    # --- repeat same approach for cbas
+    'cbas': 124.3332,
+    # --- molar mass is calculated following line ~362 in scepter.f90
+    # mwtcbas = (fr_si_cbas*mwtamsi + fr_al_cbas/2d0*mwtal2o3 + fr_na_cbas/2d0*mwtna2o 
+    #            + fr_k_cbas/2d0*mwtk2o + fr_ca_cbas*mwtcao + fr_mg_cbas*mwtmgo + fr_fe2_cbas*mwtfe2o )
+    # 
+    # Uses the weight fractions defined in scepter.f90 lines ~137-143
+    # fr_si_cbas = 1d0 ! Si fraction of clystaline basalt; Pollyea and Rimstidt 2017 (referring to basalt used by Oelkers and Gislason (2001) and Gundbrandsson et al. (2011)
+    # fr_al_cbas = 0.358d0 ! Al fraction of clystaline basalt
+    # fr_na_cbas = 0.079d0 ! Na fraction of clystaline basalt 
+    # fr_k_cbas = 0.08d0 ! K fraction of clystaline basalt
+    # fr_mg_cbas = 0.281d0 ! Mg fraction of clystaline basalt
+    # fr_ca_cbas = 0.264d0 ! Ca fraction of clystaline basalt
+    # fr_fe2_cbas = 0.190d0 ! Fe2 fraction of clystaline basalt
+    # 
+    # si: 1.0 * 60.085          = 60.085
+    # al: 0.358/2 * 101.962     = 18.251198
+    # na: 0.079/2 * 61.979      = 2.4481705
+    # k: 0.08/2 * 94.195        = 3.7678
+    # ca: 0.264 * 56.079        = 14.804856
+    # mg: 0.281 * 40.304        = 11.325424
+    # fe2: 0.19 * 71.846        = 13.65074
+    #
+    # SUM --------------------> = 124.3332
+}   
 
 
 # %%

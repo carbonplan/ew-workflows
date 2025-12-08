@@ -1439,6 +1439,74 @@ def emissions_calculator_ds(
     return dsout
 
 
+def df_to_ds_with_time( # for the cdr_ds set of functions
+        dims_full: list,
+        dfx: list,
+        timetol: float=1e-2
+)->xr.Dataset:
+    """
+    convert pandas dataframe to xarray dataset in cases where we have multiple 
+    models with the same number of timesteps but slightly different time values
+    --> we make timestep index a dimension, then take the mean time per timestep
+        then add that as a dimension and return the result
+    """
+    groupby_list = [x for x in dims_full if x != "time"]
+    # replace `time` with `time_step`
+    dims_full = ['time_step' if c == 'time' else c for c in dims_full]
+    # add time_step to the dataframe
+    dfx['time_step'] = (
+        dfx.groupby(groupby_list)
+        .cumcount()
+    )
+    # create the cdr dataset
+    dfx_full_idx = dfx.set_index(dims_full)
+    dsx_full = xr.Dataset.from_dataframe(dfx_full_idx)
+    # look at variability in time across experiments
+    other_dims = [d for d in dsx_full.dims if d != "time_step"]
+
+    return dsx_full # (keep it in time index terms, convert to time later)
+    # # compute std and mean across experiments at each time_step
+    # time_std = dsx_full['time'].std(dim=other_dims)
+    # time_mean = dsx_full['time'].mean(dim=other_dims)
+    # max_abs_diff = time_std.max().item()
+    # max_rel_diff = (time_std / time_mean).max().item()
+    # # --- [ TROUBLESHOOT ] ---
+    # # print("Max absolute difference:", max_abs_diff)
+    # # print("Max relative difference:", max_rel_diff)
+    # if max_abs_diff < timetol: # add time to cdr dataset
+    #     dsx_full = dsx_full.assign_coords(time=time_mean)
+    #     dsx_full = dsx_full.swap_dims({"time_step": "time"})
+    #     return dsx_full
+    # else:
+    #     raise ValueError("Simulation timesteps are not similar enough to make an xarray dataset")
+    
+def convert_time_index_to_time(
+        dsx: xr.Dataset,
+        timetol: float=1e-2,
+)-> xr.Dataset:
+    """
+    read in a dataset that has the time index as a coordinate
+    and time itself as a variable. Convert the variable to a new
+    coordinate that replaces the time index so long as the time 
+    across all dimensions is similar enough
+    """
+    # dims across which to compare time data
+    other_dims = [d for d in dsx.dims if d != "time_step"]
+    # compute std and mean across experiments at each time_step
+    time_std = dsx['time'].std(dim=other_dims)
+    time_mean = dsx['time'].mean(dim=other_dims)
+    max_abs_diff = time_std.max().item()
+    max_rel_diff = (time_std / time_mean).max().item()
+    # --- [ TROUBLESHOOT ] ---
+    # print("Max absolute difference:", max_abs_diff)
+    # print("Max relative difference:", max_rel_diff)
+    if max_abs_diff < timetol: # add time to cdr dataset
+        dsx = dsx.assign_coords(time=time_mean)
+        dsx = dsx.swap_dims({"time_step": "time"})
+        return dsx
+    else:
+        raise ValueError("Simulation timesteps are not similar enough to make an xarray dataset")
+
 
 def cdr_ds(
     cdr_dict: dict,
@@ -1446,6 +1514,7 @@ def cdr_ds(
     cdr_calc_list: list,
     loss_percents: np.array = np.linspace(100,1,50),
     skip_loss: bool=False,
+    convert_time_to_timestep: bool=False,
 ) -> xr.Dataset:
     """
     Generate an xarray dataset for the removal and emissions fluxes
@@ -1463,6 +1532,13 @@ def cdr_ds(
         list whose elements correspond to the keys in the dictionary above
     loss_percents : np.array
         array of values [0,100] for computing downstream loss
+    skip_loss : bool
+        whether to skip the loss calculation
+    convert_time_to_timestep : bool
+        Sometimes time steps slightly differ between runs that have the same number
+        of steps and this creates annoying gaps in the dataset. if True, the function 
+        converts time to a time step index and uses that for the coordinate, saving 
+        time itself as a variable. (only applied if time is in `dims`)
     
     Returns 
     -------
@@ -1482,9 +1558,10 @@ def cdr_ds(
         print(f"solving {tc}")
         dfin = cdr_dict[tc]
         dsout_dict[tc] = co2_flx_cdr_ds(
-            dfin, dims, loss_percents, skip_loss=skip_loss,
+            dfin, dims, loss_percents, skip_loss=skip_loss, 
+            convert_time_to_timestep=convert_time_to_timestep,
         )
-
+    
     # --- OPTION 2: "camg_flx" -----------------------
     if "camg_flx" in cdr_calc_list:
         tc = 'camg_flx'
@@ -1495,6 +1572,7 @@ def cdr_ds(
         dsout_dict[tc] = cation_flx_cdr_ds(
             dfin, dims, loss_percents, cation_flag='camg', 
             cdr_calc_cols=["co2pot_tot", "co2pot_adv", "DICpot_adv"], skip_loss=skip_loss,
+            convert_time_to_timestep=convert_time_to_timestep
         )
     
     # --- OPTION 3: "totcat_flx" ---------------------
@@ -1507,6 +1585,7 @@ def cdr_ds(
         dsout_dict[tc] = cation_flx_cdr_ds(
             dfin, dims, loss_percents, cation_flag='totcat', 
             cdr_calc_cols=["co2pot_tot", "co2pot_adv", "DICpot_adv"], skip_loss=skip_loss,
+            convert_time_to_timestep=convert_time_to_timestep
         )
     
     # --- OPTION 4: "carbalk_flx" --------------------
@@ -1520,11 +1599,14 @@ def cdr_ds(
         tc = 'rockdiss'
         print(f"solving {tc}")
         dfin = cdr_dict[tc]
-        dsout_dict[tc] = rockdiss_ds(dfin, dims)
+        dsout_dict[tc] = rockdiss_ds(dfin, dims, convert_time_to_timestep=convert_time_to_timestep)
 
     # return dsout_dict
     # merge the dictionary of datasets into a single ds
     dsout = xr.merge(dsout_dict.values())
+    if convert_time_to_timestep:
+        dsout = convert_time_index_to_time(dsout)
+        return dsout
     # 
     # return the result
     #
@@ -1538,6 +1620,7 @@ def co2_flx_cdr_ds(
     cdr_calc_cols: list=["cdr_dif", "cdr_adv", "cdr_adv_plus_newSIC", "cdr_SIConly", "tot_adv"],
     dustrate_name: str = "dustrate_ton_ha_yr",
     skip_loss: bool=False,
+    convert_time_to_timestep: bool=False,
 ) -> xr.Dataset:
     """
     Get the removals from the co2flx calculations in a dataset form
@@ -1560,6 +1643,11 @@ def co2_flx_cdr_ds(
     skip_loss : bool
         [True] to skip computing the downstream loss factor, False to include it
         (note, set skip_loss to True if it's not time integrated)
+    convert_time_to_timestep : bool
+        Sometimes time steps slightly differ between runs that have the same number
+        of steps and this creates annoying gaps in the dataset. if True, the function 
+        converts time to a time step index and uses that for the coordinate, saving 
+        time itself as a variable. (only applied if time is in `dims`)
 
     Returns
     -------
@@ -1611,14 +1699,26 @@ def co2_flx_cdr_ds(
             
             lossdx += 1
 
-    # create the cdr dataset
-    dfx_full_idx = dfx_cdr_full.set_index(dims_full)
-    dsx_full = xr.Dataset.from_dataframe(dfx_full_idx)
-
+    # [ add timestep if asked to ]
+    if ('time' not in dims_full) or (not convert_time_to_timestep):
+        # create the cdr dataset
+        dfx_full_idx = dfx_cdr_full.set_index(dims_full)
+        dsx_full = xr.Dataset.from_dataframe(dfx_full_idx)
+        # create the flux datasets (not defined over loss_percent dimension)
+        # using the columns that aren't already in the full ds
+        dfx_idx = dfx.drop(columns=list(dsx_full.data_vars)).set_index(dims)
+        dsx_x = xr.Dataset.from_dataframe(dfx_idx)
+    else:
+        dsx_full = df_to_ds_with_time(dims_full, dfx_cdr_full)
+        # create the flux datasets (not defined over loss_percent dimension)
+        # using the columns that aren't already in the full ds
+        dfx_idx = dfx.drop(columns=list(dsx_full.data_vars))
+        dsx_x = df_to_ds_with_time(dims, dfx_idx)
+    # ----
     # create the flux dataset (not defined over loss_percent dimension)
     # using the columns that aren't already in the full ds
-    dfx_idx = dfx.drop(columns=list(dsx_full.data_vars)).set_index(dims)
-    dsx_x = xr.Dataset.from_dataframe(dfx_idx)
+    # dfx_idx = dfx.drop(columns=list(dsx_full.data_vars)).set_index(dims)
+    # dsx_x = xr.Dataset.from_dataframe(dfx_idx)
 
     # bring them together
     dsx = xr.merge([dsx_full, dsx_x])
@@ -1647,6 +1747,7 @@ def cation_flx_cdr_ds(
     cdr_calc_cols: list=["co2pot_tot", "co2pot_adv", "DICpot_adv"],
     dustrate_name: str = "dustrate_ton_ha_yr",
     skip_loss: bool=False,
+    convert_time_to_timestep: bool=False,
 ) -> xr.Dataset:
     """
     Get the removals from the cation calculations in a dataset form
@@ -1671,6 +1772,11 @@ def cation_flx_cdr_ds(
     skip_loss : bool
         [True] to skip computing the downstream loss factor, False to include it
         (note, set skip_loss to True if it's not time integrated)
+    convert_time_to_timestep : bool
+        Sometimes time steps slightly differ between runs that have the same number
+        of steps and this creates annoying gaps in the dataset. if True, the function 
+        converts time to a time step index and uses that for the coordinate, saving 
+        time itself as a variable. (only applied if time is in `dims`)
 
     Returns
     -------
@@ -1729,14 +1835,27 @@ def cation_flx_cdr_ds(
             
             lossdx += 1
 
-    # create the cdr datasets
-    dfx_full_idx = dfx_cdr_full.set_index(dims_full)
-    dsx_full = xr.Dataset.from_dataframe(dfx_full_idx)
+    # [ add timestep if asked to ]
+    if ('time' not in dims_full) or (not convert_time_to_timestep):
+        # create the cdr dataset
+        dfx_full_idx = dfx_cdr_full.set_index(dims_full)
+        dsx_full = xr.Dataset.from_dataframe(dfx_full_idx)
+        # create the flux datasets (not defined over loss_percent dimension)
+        # using the columns that aren't already in the full ds
+        dfx_idx = dfx.drop(columns=list(dsx_full.data_vars)).set_index(dims)
+        dsx_x = xr.Dataset.from_dataframe(dfx_idx)
+    else:
+        dsx_full = df_to_ds_with_time(dims_full, dfx_cdr_full)
+        # create the flux datasets (not defined over loss_percent dimension)
+        # using the columns that aren't already in the full ds
+        dfx_idx = dfx.drop(columns=list(dsx_full.data_vars))
+        dsx_x = df_to_ds_with_time(dims, dfx_idx)
 
+    # ----
     # create the flux datasets (not defined over loss_percent dimension)
     # using the columns that aren't already in the full ds
-    dfx_idx = dfx.drop(columns=list(dsx_full.data_vars)).set_index(dims)
-    dsx_x = xr.Dataset.from_dataframe(dfx_idx)
+    # dfx_idx = dfx.drop(columns=list(dsx_full.data_vars)).set_index(dims)
+    # dsx_x = xr.Dataset.from_dataframe(dfx_idx)
 
     # bring them together
     dsx = xr.merge([dsx_full, dsx_x])
@@ -1766,6 +1885,7 @@ def cation_flx_cdr_ds(
 def rockdiss_ds(
     dfin: pd.DataFrame,
     dims: list,
+    convert_time_to_timestep: bool=False,
 ) -> xr.Dataset:
     """
     Get the rockdiss and emissions data in dataset form
@@ -1777,6 +1897,11 @@ def rockdiss_ds(
     dims : list
         list of dimensions for the xr dataset. must correspond to columns in dfin. generally
         the same as dfin_cols_to_keep 
+    convert_time_to_timestep : bool
+        Sometimes time steps slightly differ between runs that have the same number
+        of steps and this creates annoying gaps in the dataset. if True, the function 
+        converts time to a time step index and uses that for the coordinate, saving 
+        time itself as a variable. (only applied if time is in `dims`)
     
     Returns
     -------
@@ -1792,9 +1917,15 @@ def rockdiss_ds(
     # rename the adv column to be clearer that it's rock
     dfx = dfx.rename(columns = {'adv': 'adv_feedstock'})
 
-    # create the flux datasets (not defined over loss_percent dimension)
-    dfx_idx = dfx.set_index(dims)
-    dsx = xr.Dataset.from_dataframe(dfx_idx)
+    # [ add timestep if asked to ]
+    if ('time' not in dims) or (not convert_time_to_timestep):
+        # create the flux dataset (not defined over loss_percent dimension)
+        dfx_idx = dfx.set_index(dims)
+        dsx = xr.Dataset.from_dataframe(dfx_idx)
+    else:
+        # create the flux dataset (not defined over loss_percent dimension)
+        dsx = df_to_ds_with_time(dims, dfx)
+    # ----
 
     # --- add attributes back in
     for thiscol in cols_to_discard_present:
@@ -2269,6 +2400,7 @@ def save_batch_postproc_profOnly(
     save_directory: str=None,
     base_path: str=None,
     base_dir_name: str=None,
+    use_zarr: bool=True,
 ):
     '''
     Save the individual files in the batch postprocess profile dictionary.
@@ -2303,28 +2435,33 @@ def save_batch_postproc_profOnly(
         outdir = save_directory
 
     # --- save results
-    for key, ds in dsdict.items():
-        savename = f"{key}_{dustsp_tag}_{filename_suffix}.nc"
+    if use_zarr: 
+        for key, ds in dsdict.items():
+            savename = f"{key}_{dustsp_tag}_{filename_suffix}.zarr"
+            ds.to_zarr(os.path.join(outdir, savename))
+    else:
+        for key, ds in dsdict.items():
+            savename = f"{key}_{dustsp_tag}_{filename_suffix}.nc"
 
-        # check for AWS
-        if outdir.startswith("s3://"):
-            # NOTE: I couldn't get the netcdf files to save to aws
-            # with the default netcdf4 engine. As a workaround, I'm 
-            # saving the file locally in a tempfile, then moving it 
-            # to aws and deleting it locally :[]
-            import tempfile
-            with tempfile.NamedTemporaryFile(delete=False) as tmp_file1:
-                # save the dataset to the temporary file
-                tmp_file1_path = tmp_file1.name
-                ds.to_netcdf(tmp_file1_path)
+            # check for AWS
+            if outdir.startswith("s3://"):
+                # NOTE: I couldn't get the netcdf files to save to aws
+                # with the default netcdf4 engine. As a workaround, I'm 
+                # saving the file locally in a tempfile, then moving it 
+                # to aws and deleting it locally :[]
+                import tempfile
+                with tempfile.NamedTemporaryFile(delete=False) as tmp_file1:
+                    # save the dataset to the temporary file
+                    tmp_file1_path = tmp_file1.name
+                    ds.to_netcdf(tmp_file1_path)
+                    
+                    # upload the file to S3 using s3fs
+                    import s3fs
+                    fs = s3fs.S3FileSystem()
+                    fs.put(tmp_file1_path, os.path.join(outdir, savename))
                 
-                # upload the file to S3 using s3fs
-                import s3fs
-                fs = s3fs.S3FileSystem()
-                fs.put(tmp_file1_path, os.path.join(outdir, savename))
-            
-        else:
-            ds.to_netcdf(os.path.join(outdir, savename))
+            else:
+                ds.to_netcdf(os.path.join(outdir, savename))
     
     # return the directory it's saved in
     return outdir
@@ -2395,6 +2532,41 @@ def create_save_dict(
     return savedict
 
 
+
+def create_save_dict_oneFS_noEmiss(
+    EXP_SET: str,
+    cdr_calc_list: list,
+    group_vars: list,
+    collapse_cols: list,
+    csv_fn: str,
+    multiyear: bool, 
+    time_horizon: float, 
+    outdir: str,
+    batchdir: str,
+)->dict:
+    """
+    Combine all inputs into a pre-formatted dictionary that 
+    we'll save as a .res file. 
+    """
+    savedict = {
+        "Setup": {
+            # "site": thissite,
+            "EXP_SET": EXP_SET,
+            "cdvars": cdr_calc_list,
+            "group_vars": group_vars,
+            "collapse_cols": collapse_cols,
+            "csv": csv_fn,
+            "multiyear": multiyear,
+            "outdir": outdir,
+            "batchdir": batchdir,
+        },
+        "Removal accounting": {
+            "time_horizon": time_horizon,
+        },
+        
+    }
+
+    return savedict
 
 
 def save_batch_postproc(
@@ -2515,6 +2687,81 @@ def save_batch_postproc(
         ds_sil.to_netcdf(os.path.join(outdir, "ds_sil.nc"))
         ds_cc.to_netcdf(os.path.join(outdir, "ds_cc.nc"))
         ds_anom.to_netcdf(os.path.join(outdir, "ds_anom.nc"))
+
+    # return the path to the save directory
+    return outdir
+
+
+def save_batch_postproc_oneSet( # repeated for when we only have one set of simulations
+    savedict: dict, 
+    base_path: str, 
+    base_dir_name: str,
+    fname_res: str,
+    df_dict: dict,
+    ds_dict: dict,
+    save_directory: str=None,
+) -> str:
+    """
+    save the series of files generated when postprocessing the batch 
+    results
+
+    Parameters
+    ----------
+    savedict : dict
+        dictionary of variables we will save as a resource file
+    base_path : str
+        directory where we will create the new directory to hold 
+        the results. only used if save_directory is None
+    base_dir_name : str
+        name of the directory we want to create (the create_unique_directory
+        function will make sure nothing is overwritten). only used if 
+        save_directory is None
+    fname_res : str
+        name of the resource file that will be created from savedict
+    df_dict : dict
+        dictionary of dictionaries with pd.Dataframes for each run
+    ds_dict : xr.Dataset 
+        dictionary of xr.Datasets to save where key is the filename and 
+        value is the xr.Dataset
+    save_directory : str
+        path to the directory to save outputs. If this is None, then 
+        a unique directory will be created based on base_path and 
+        base_dir_name
+    
+    Returns
+    -------
+    str
+        the path for the save directory
+    """
+    # create the new directory or set the defined one
+    if save_directory is None:
+        outdir = create_unique_directory(base_path, base_dir_name)
+    else:
+        outdir = save_directory
+
+    # [2] save the dict as a resource file
+    save_variables_to_file(os.path.join(outdir, fname_res), savedict)
+
+    # [3] save the pandas dataframes as a single pickle file
+    for key, df in df_dict.items():
+        savedf_fn = os.path.join(outdir, key)
+        # ----------------------------
+        # check for S3
+        if savedf_fn.startswith("s3://"): # then bring it in from s3
+            import fsspec
+            with fsspec.open(savedf_fn, 'wb') as f:
+                pickle.dump(df, f)
+        else:
+            with open(savedf_fn, 'wb') as f:
+                pickle.dump(df, f)
+        # ----------------------------
+        # NOTE: you can open the dfs like this:
+        # with open('dataframes.pkl', 'rb') as f:
+            # loaded_dfs = pickle.load(f) 
+
+    # [4] save datasets to zarr
+    for key, ds in ds_dict.items():
+        ds.to_zarr(os.path.join(outdir, key))
 
     # return the path to the save directory
     return outdir

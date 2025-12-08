@@ -329,7 +329,7 @@ def build_df_one_at_a_time(
     for key, values in individual_cases.items():
         for v in values:
             individual_override_list.append({key: v})
-    dfs = []
+    dfs = [df]
     for override in individual_override_list:
         df_new = df.copy()
         # apply override to all rows

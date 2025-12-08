@@ -26,13 +26,13 @@ from ew_workflows import batch_helperFxns as bhf
 
 # %%
 # [ UNIVERSAL ]
-EXP_SET = "longrunOAT_noAmnt"
+EXP_SET = "lrOAT_hommix"
 runtype = "monthly_ltm"
-extra_tag = "annual_v0"
+extra_tag = "v0"
 pref = f"{EXP_SET}_{runtype}_{extra_tag}"
 fn = pref + ".csv"
 dustsp = "gbas"
-spinup_tag = "_no-amnt"
+spinup_tag = "_no-amnt"  # "_no-amnt"
 
 # save preferences
 savepath_batch = "s3://carbonplan-carbon-removal/ew-workflows-data/scepter/batch/"
@@ -62,17 +62,17 @@ const_dict = {
     # ---------------------------
 
     # --- CONTROL VALUES ---
-    "psdrain_meanRad": 75/1e6,
+    "dustrad": 75,   # [micron]
     "secondary_min_rule": "sld_track",
     "poro_updated": 0.35,
     "dustrate_2nd": 0.,    # [g/m2/yr] (=t/ha/yr * 100)
 
     # --- sometimes changed ---
-    "imix": 3,    # mixing style (1=fickian; 2=homogeneous; 3=tilling)
+    "imix": 2,    # mixing style (1=fickian; 2=homogeneous; 3=tilling)
     "cec_adsorption_on": True, 
 
     # --- surface area / poro / psd rules
-    "include_psd_full": True, 
+    "include_psd_full": False, 
     "include_psd_bulk": False,
     'psdrain_log10_sd': 0.05, # [] log 10 standard deviation for psd
     'psdrain_wt': 1.0,       # [] weight for the psd
@@ -85,7 +85,7 @@ const_dict = {
                                    # (roughness factor = (beta / a)^0.33) where beta is particle radius in m and a is BET measurement resolution in m, taken to be 10^-10 
     
     # --- other
-    "singlerun_seasonality": True,
+    "singlerun_seasonality": False,
     'climatedir': 's3://carbonplan-carbon-removal/ew-workflows-data/scepter/clim/era5_2006-01-01_2020-12-31/',   # climate input main directory
     "skip_lab_run": True,
     'spindir': "s3://carbonplan-carbon-removal/SCEPTER/scepter_output/spinups/", 
@@ -112,7 +112,7 @@ const_dict = {
 # ==========================================================================
 individual_cases = { 
     # [ Each element is one (and only) tweak from ctrl ]
-    "psdrain_meanRad": [10/1e6, 300/1e6],    # [m]
+    "dustrad": [10, 300],    # [micron]
     "secondary_min_rule": ["remove"],
     "poro_updated": [0.25, 0.45],    # initial porosity
 }
@@ -160,6 +160,10 @@ df = bhf.build_df_one_at_a_time(
     add_ctrl=True,
     add_index=True,
 )
+
+# [ account for psd tracking ]
+if const_dict['include_psd_full'] or const_dict['include_psd_bulk']:
+    df['psdrain_meanRad'] = df['dustrad'] / 1e6  # (convert um to m)
 
 
 # %%
