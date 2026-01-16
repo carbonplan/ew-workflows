@@ -13,7 +13,7 @@ rule run_simulation:
         mem_mb=7700
     shell:
         """
-        git clone https://github.com/carbonplan/ew-workflows.git /app
+        git clone --branch aws-batch-demo https://github.com/carbonplan/ew-workflows.git /app
         cd /app
         pip install .
         echo "test result from sim {wildcards.sim_id}" > {output}
