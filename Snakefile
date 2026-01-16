@@ -13,9 +13,9 @@ rule run_simulation:
         mem_mb=7700
     shell:
         """
-	/srv/conda/envs/notebook/bin/pip install snakemake snakemake-storage-plugin-s3
         git clone --branch your-branch-name https://github.com/carbonplan/ew-workflows.git /app
         cd /app
+	/srv/conda/envs/notebook/bin/pip install snakemake snakemake-storage-plugin-s3
         /srv/conda/envs/notebook/bin/pip install .
         echo "result from sim {wildcards.sim_id}" > {output}
         """
