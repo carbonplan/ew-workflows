@@ -13,6 +13,7 @@ rule run_simulation:
         mem_mb=7700
     shell:
         """
+	pip install snakemake snakemake-storage-plugin-s3
         git clone --branch aws-batch-demo https://github.com/carbonplan/ew-workflows.git /app
         cd /app
         pip install .
