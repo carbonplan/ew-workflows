@@ -1,0 +1,8 @@
+executor: aws-batch
+default-storage-provider: s3
+default-storage-prefix: s3://carbonplan-scratch/ew-workflows
+aws-batch-region: us-west-2
+aws-batch-job-queue: arn:aws:batch:us-west-2:631969445205:job-queue/ew-workflow-compute-env
+aws-batch-job-role: arn:aws:iam::631969445205:role/aws_batch_service_role01 
+container-image: quay.io/carbonplan/ew-workflows:latest
+jobs: 40
