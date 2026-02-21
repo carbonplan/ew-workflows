@@ -14,6 +14,7 @@ dependencies = [
     "h5netcdf>=1.7.3",
     "icechunk>=1.1.5",
     "ipykernel>=6.30.1",
+    "jupyterlab>=4.5.4",
     "matplotlib>=3.10.7",
     "netcdf4>=1.7.3",
     "obstore>=0.8.2",

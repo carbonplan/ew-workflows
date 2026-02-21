@@ -789,11 +789,12 @@ def check_scepter_exec(
 def create_dust_input(
     outdir: str, 
     runname: str,
-    dust1_dict: dict,
-    dust2_dict: dict,
     t_add: float,
     taudust: float,
+    dust1_dict: dict=None,
+    dust2_dict: dict=None,
     output_filename: str = "Dust_temp.in",
+    dust_csv_path: str=None,
     dryrun: bool=False,
     taudust_default: float = 0.05,
 )->str:
@@ -803,6 +804,12 @@ def create_dust_input(
     application flux (g/m2/yr). The model figures out the true application 
     flux for each species by multiplying the unscaled flux from `Dust_temp.in` 
     by the value in `dust.in` for that given species. 
+
+    We either create `Dust_temp.in` using dustX_dict with the dust species name
+    and dustrates. Or we use a csv file with a column for `time_yr` and another 
+    for `dustrate` and we assume the csv file's `dustrate` is the total mass
+    of all dust applied (which is then partitioned based on mineralogy of the 
+    dust.in file)
 
     - Reads time grid from: <outdir>/<runname>/q_temp.in
       (expects whitespace-separated file, time in first column, units = years).
@@ -887,7 +894,8 @@ def create_dust_input(
         }
 
     # ---------------------
-    # get total amount of dust to add
+    # get total amount of dust to add 
+    # if we don't define it in a time-varying csv
     # ---------------------
     # Note: dust.in values are relative weight ratios of each species.
     # they don't have to add to one, but total application is 
@@ -904,15 +912,43 @@ def create_dust_input(
         for dat in f:
             dustdata.append(dat)
     # --- compare to input dicts
-    #     stop when we get a match
-    for line in dustdata[1:]:
-        thislist = line.split()
-        if thislist[0] in dust1_dict.keys():
-            dust_temp_x = dust1_dict[thislist[0]] / float(thislist[1])
-            break
-        elif thislist[0] in dust2_dict.keys():
-            dust_temp_x = dust2_dict[thislist[0]] / float(thislist[1])
-            break
+    if dust_csv_path is None:
+        #     stop when we get a match
+        for line in dustdata[1:]:
+            thislist = line.split()
+            if thislist[0] in dust1_dict.keys():
+                dust_temp_x = dust1_dict[thislist[0]] / float(thislist[1])
+                break
+            elif thislist[0] in dust2_dict.keys():
+                dust_temp_x = dust2_dict[thislist[0]] / float(thislist[1])
+                break
+
+    # -----------------------------------------
+    # optional: override with time-varying CSV
+    # -----------------------------------------
+    annual_dust_dict = None
+    if dust_csv_path is not None:
+        df_dust = pd.read_csv(dust_csv_path)
+        required_cols = {"time_yr", "dustrate"}
+        if not required_cols.issubset(df_dust.columns):
+            raise ValueError(
+                f"CSV must contain columns: {required_cols}"
+            )
+        # convert to integer year for mapping
+        df_dust["year"] = np.floor(df_dust["time_yr"]).astype(int)
+        # if multiple rows per year, sum them
+        df_year = (
+            df_dust.groupby("year")["dustrate"]
+            .sum()
+            .reset_index()
+        )
+        # get total amount of dust by fdust[species] / dust.in[species_n] (again, fixed value) for all species
+
+
+
+        annual_dust_dict = dict(
+            zip(df_year["year"], df_year["dustrate"])
+        )
 
     # Prepare output arrays (rates in g/m2/yr at each time point)
     rates = np.zeros_like(times, dtype=float)
@@ -969,21 +1005,31 @@ def create_dust_input(
         end = t_event + L
 
         # For each timestep, compute overlap with [start,end) and allocate proportionally
-        if dust_temp_x != 0.0:
-            # total mass to allocate (per year) is dust_temp_x [g/m2/yr]
+        # Determine annual application mass A for this year
+        if annual_dust_dict is not None:
+            A = annual_dust_dict.get(year, 0.0)
+        else:
             A = float(dust_temp_x)
-            # contribution mass per timestep = A * (overlap / L)
-            # rate contribution = contribution_mass / dt[i]  (units g/m2/yr)
+
+        if A == 0.0:
+            continue
+        # contribution mass per timestep = A * (overlap / L)
+        # rate contribution = contribution_mass / dt[i]  (units g/m2/yr)
+        for i in range(n):
+            step_start = float(times[i])
+            step_end = step_start + float(dt[i])
+            overlap = max(0.0, min(step_end, end) - max(step_start, start))
+
+            if overlap > 0.0:
+                contrib_mass = A * (overlap / L)  # g/m2 mass
+                rate_add = contrib_mass / float(dt[i])  # g/m2/yr
+                rates[i] += rate_add
+
+        # ---- compute cumulative mass correctly (only for dryrun)
+        if dryrun:
+            total1 = 0.0
             for i in range(n):
-                step_start = float(times[i])
-                step_end = step_start + float(dt[i])
-                overlap = max(0.0, min(step_end, end) - max(step_start, start))
-                if overlap > 0.0:
-                    contrib_mass = A * (overlap / L)  # g/m2  (mass applied this year portion)
-                    # convert to rate for this step (g/m2/yr)
-                    rate_add = contrib_mass / float(dt[i])
-                    rates[i] += rate_add
-                total1 += rates[i]
+                total1 += rates[i] * dt[i]
                 cumrates[i] = total1
 
     # Build header and only include columns for requested feedstocks
@@ -1010,8 +1056,14 @@ def create_dust_input(
                     # arr may contain float values
                     row_vals.append(fmt.format(float(arr[i])))
                 fout.write("\t".join(row_vals) + "\n")
-
+        if dust_csv_path is not None: # save warning message
+            warning_msg = "Warning: time-varying dust with Dust_temp.in built on a dust .csv means the `dustrate` in the .csv will be the full rate of all dust (partitioned between minerals as noted in `dust.in`)"
+            outpath = os.path.join(outdir, runname, "_warning-dustCalc.txt")
+            with open(outpath, "w") as fout:
+                fout.write(warning_msg)
+            
         return outpath
+    
 
 
 def create_dust_input_multiSp(
