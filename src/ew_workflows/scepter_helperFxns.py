@@ -809,7 +809,8 @@ def create_dust_input(
     and dustrates. Or we use a csv file with a column for `time_yr` and another 
     for `dustrate` and we assume the csv file's `dustrate` is the total mass
     of all dust applied (which is then partitioned based on mineralogy of the 
-    dust.in file)
+    dust.in file). If the csv file's `dustrate` is "defer", we use the value 
+    in dust1_dict.
 
     - Reads time grid from: <outdir>/<runname>/q_temp.in
       (expects whitespace-separated file, time in first column, units = years).
@@ -928,12 +929,21 @@ def create_dust_input(
     # -----------------------------------------
     annual_dust_dict = None
     if dust_csv_path is not None:
-        df_dust = pd.read_csv(dust_csv_path)
+        df_dust = pd.read_csv(dust_csv_path, dtype={"dustrate": str})
         required_cols = {"time_yr", "dustrate"}
         if not required_cols.issubset(df_dust.columns):
             raise ValueError(
                 f"CSV must contain columns: {required_cols}"
             )
+        # -------------------------------------
+        # Replace "defer" with dust1_dict
+        # -------------------------------------
+        df_dust["dustrate"] = df_dust["dustrate"].replace(
+            "defer",
+            str(dust1_dict[list(dust1_dict.keys())[0]])
+        )
+        # safely convert to float
+        df_dust["dustrate"] = df_dust["dustrate"].astype(float)
         # convert to integer year for mapping
         df_dust["year"] = np.floor(df_dust["time_yr"]).astype(int)
         # if multiple rows per year, sum them
@@ -942,10 +952,6 @@ def create_dust_input(
             .sum()
             .reset_index()
         )
-        # get total amount of dust by fdust[species] / dust.in[species_n] (again, fixed value) for all species
-
-
-
         annual_dust_dict = dict(
             zip(df_year["year"], df_year["dustrate"])
         )
