@@ -2,10 +2,13 @@
 import os
 import json
 from pathlib import Path
+from pathlib import PurePosixPath
 import re
 import time 
+from typing import Literal, Union
 
 import argparse
+import fsspec
 import numpy as np
 import pandas as pd
 from urllib.parse import urljoin
@@ -114,6 +117,47 @@ def read_csv_from_s3_or_local(
         return df
     else:
         raise ValueError(f"Unsupported return_type: {return_type}")
+
+
+from typing import Literal, Union
+import fsspec
+
+def list_json_files(
+    path: str,
+    return_type: Literal["str", "dict"] = "str",
+) -> Union[list[str], list[dict[str, str]]]:
+    """
+    Return a list of full paths to .json files in a local or S3 directory.
+
+    Parameters
+    ----------
+    path : str
+        Directory path (local filesystem or S3, e.g. 's3://bucket/prefix')
+    return_type : {"str", "dict"}, optional
+        If "str", return a list of strings (default).
+        If "dict", return a list of dicts with key "json_path".
+
+    Returns
+    -------
+    list[str] or list[dict[str, str]]
+        Sorted list of JSON file paths, optionally wrapped in dicts.
+    """
+    fs, fs_path = fsspec.core.url_to_fs(path)
+
+    entries = fs.ls(fs_path, detail=True)
+
+    json_files = [
+        fs.unstrip_protocol(entry["name"])
+        for entry in entries
+        if entry["type"] == "file" and entry["name"].endswith(".json")
+    ]
+
+    json_files = sorted(json_files)
+
+    if return_type == "dict":
+        return [{"json_path": p} for p in json_files]
+
+    return json_files
 
 
 def sanitize_job_name(filename):

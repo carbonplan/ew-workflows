@@ -26,7 +26,7 @@ from ew_workflows import batch_helperFxns as bhf
 
 # %%
 # [ UNIVERSAL ]
-EXP_SET = "lrOAT_ann_psdfull"
+EXP_SET = "lrOAT_100on-50off"
 dustsp = "gbas"
 runtype = "monthly_ltm"
 extra_tag = "v0"
@@ -50,8 +50,8 @@ const_dict = {
     "dustsp_2nd": "amnt",
 
     # --- MULTI-YEAR SPECIFIC ---
-    # "dust_ts_dir": f"s3://carbonplan-carbon-removal/ew-workflows-data/scepter/dust/",
-    # "dust_ts_fn": f"{dustsp}_100yr_3-yearly_001.csv",
+    "dust_ts_dir": f"s3://carbonplan-carbon-removal/ew-workflows-data/scepter/dust/",
+    "dust_ts_fn": f"{dustsp}_150yr_100on-50off_001.csv", 
     # ---------------------------
 
     # --- PH-REACT SPECIFIC ----
@@ -64,15 +64,15 @@ const_dict = {
     # --- CONTROL VALUES ---
     "dustrad": 75,   # [micron]
     "secondary_min_rule": "sld_track",
-    "poro_updated": 0.35,
+    "poro_updated": "None", # 0.35,
     "dustrate_2nd": 0.,    # [g/m2/yr] (=t/ha/yr * 100)
 
     # --- sometimes changed ---
-    "imix": 2,    # mixing style (1=fickian; 2=homogeneous; 3=tilling)
+    "imix": 3,    # mixing style (1=fickian; 2=homogeneous; 3=tilling)
     "cec_adsorption_on": True, 
 
     # --- surface area / poro / psd rules
-    "include_psd_full": True, 
+    "include_psd_full": False, 
     "include_psd_bulk": False,
     'psdrain_log10_sd': 0.05, # [] log 10 standard deviation for psd
     'psdrain_wt': 1.0,       # [] weight for the psd
@@ -100,7 +100,7 @@ const_dict = {
     'aws_bucket': f"s3://carbonplan-carbon-removal/SCEPTER/scepter_output/{EXP_SET}",  # where to save at AWS (only used if 'aws_save'=True)
     
     # --- which executable to use
-    'scepter_exec_name': 'scepter_richards'  # ['scepter', 'scepter_rateA', ...]
+    'scepter_exec_name': 'scepter'  # ['scepter', 'scepter_rateA', ...]
 }
 # ==========================================================================
 
@@ -113,8 +113,8 @@ const_dict = {
 individual_cases = { 
     # [ Each element is one (and only) tweak from ctrl ]
     "dustrad": [10, 300],    # [micron]
-    "secondary_min_rule": ["remove"],
-    "poro_updated": [0.25, 0.45],    # initial porosity
+    # "secondary_min_rule": ["remove"],
+    # "poro_updated": [0.25, 0.45],    # initial porosity
 }
 # ==========================================================================
 

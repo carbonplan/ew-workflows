@@ -1,4 +1,4 @@
-
+# %% 
 import xarray as xr
 from distributed import Client
 from zarr.storage import ObjectStore
@@ -11,7 +11,7 @@ from icechunk.xarray import to_icechunk
 client = Client(n_workers=64)
 client 
 zarr.config.set({'async.concurrency': 128})
-
+# %% 
 gcs_store = GCSStore.from_url(
     'gs://gcp-public-data-arco-era5/ar/full_37-1h-0p25deg-chunk-1.zarr-v3/',skip_signature=True
 )
@@ -41,6 +41,7 @@ varlist = ["2m_temperature",
 
 ds_subset = ds[varlist]
 
+# %% 
 minlat, maxlat = 24, 50
 minlon, maxlon = -125, -65
 mintime, maxtime = '2000', '2020'

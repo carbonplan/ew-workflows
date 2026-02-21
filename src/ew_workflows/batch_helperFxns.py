@@ -4,10 +4,14 @@
 # input .csv files
 # 
 # --------------------------------------------
-import os
-import pandas as pd
 import itertools
+import os
 import warnings
+
+import numpy as np
+import pandas as pd
+import xarray as xr
+
 
 # %% 
 ## [1] BUILD DATAFRAME
@@ -363,6 +367,110 @@ def build_df_one_at_a_time(
 
 
 
+def build_df_multi_spinup(
+        pref: str,
+        const_dict: dict,
+        sites: list,
+        by_site: dict,
+        all_combinations: dict,
+        individual_cases: dict,
+        add_ctrl: bool=True,
+        add_index: bool = True,
+)-> pd.DataFrame:
+    """
+    build dataframe where we have multiple "by_site" entries for each
+    site. These are repeated across "all_combinations", which generally
+    includes zero dust flux to capture the control. 
+
+    Parameters
+    ----------
+    pref : str
+        prefix for each run name
+    const_dict : dict
+        dictionary for the values that are held constant 
+        across all simulations
+    sites : list
+        list of the site names across which to run the simulations
+    by_site : dict
+        dictionary for all the values that only vary by site
+        (each value should be a list of len(sites) where the 
+        first value corresponds to the first site indexed, and 
+        so on)
+    all_combinations : dict
+        dictionary for all the values to vary such that every
+        unique combination of these values is tested for each 
+        site
+    individual_cases : dict
+        dictionary for each one-at-a-time perturbation
+    add_ctrl : bool
+        [True | False] whether to add a control simulation with zero 
+        dust application for each site (NOTE, you may not want to add 
+        0 to your dust app rate list because it will needlessly repeat
+        for every other var in all_combinations)
+
+    Returns
+    -------
+    pd.DataFrame
+        This is the file that will become the .csv batch input. Each column
+        should be a variable that the SCEPTER python scripts can recognize 
+        (no typos!)
+    """
+        
+    # [1] generate all combinations from the dict's vectors
+    all_combos_list = list(itertools.product(*all_combinations.values()))
+    # make dataframe and repeat values for the number of sites
+    df = pd.DataFrame(all_combos_list, columns=all_combinations.keys())
+
+    # [2] add site-specific vars
+    df_site = pd.DataFrame(by_site)
+    # merge with all_combinations
+    df = df_site.merge(df, how='cross')
+
+    # [3] add constant vars that do not appear in "all_combinations"
+    unique_keys = {k: v for k, v in const_dict.items() if k not in df.columns}
+    control_keys = {k: v for k, v in const_dict.items() if k in df.columns}
+    for key, value in unique_keys.items():
+        df[key] = value
+
+    # [4] repeat for all individual cases
+    # each key in `individual_cases` creates a *set* of additional simulations
+    individual_override_list = []
+    for key, values in individual_cases.items():
+        for v in values:
+            individual_override_list.append({key: v})
+    dfs = [df]
+    for override in individual_override_list:
+        df_new = df.copy()
+        # apply override to all rows
+        for k, v in override.items():
+            df_new[k] = v
+        dfs.append(df_new)
+    df = pd.concat(dfs, ignore_index=True)
+
+    # [5] add control cases (no dust application) if add_ctrl is True
+    if add_ctrl:
+        # loop through sites
+        for thissite in reversed(sites):
+            tmp_row = df[df['site'] == thissite].iloc[0]
+            # set dust to zero
+            tmp_row['dustrate'] = 0.0
+            # add control keys 
+            for key, value in control_keys.items():
+                tmp_row[key] = value
+            # concat to top row
+            df = pd.concat([pd.DataFrame([tmp_row]), df], ignore_index=True)
+
+    # [6] add the newrun ID
+    df = newrun_id_fxn(df, pref, None, add_index=add_index)
+    # check that all the run ids are unique and return a warning if not
+    if not df['newrun_id'].is_unique:
+        print("YIKES!!!")
+        # warnings.warn("Column newrun_id 
+    # return result
+    return df
+
+
+
 # [2] MAKE NEWRUN ID
 def newrun_id_fxn(df: pd.DataFrame, pref: str, clim_tag: str, add_index: bool=False) -> pd.DataFrame:
     """
@@ -402,7 +510,10 @@ def newrun_id_fxn(df: pd.DataFrame, pref: str, clim_tag: str, add_index: bool=Fa
         psize = "psize_" + str(row['dustrad']).replace('.', 'p') if 'dustrad' in row else None
 
         # pull out other vars
-        site = row['climatefiles']
+        try:
+            site = row['climatefiles']
+        except:
+            site = row['site_TMP']
         dur = "tau_" + str(row['duration']).replace('.', 'p') if 'duration' in row else None
         # (not using dur for now because the python script in SCEPTER repo adds it in itself)
 
@@ -669,3 +780,189 @@ def make_dustflx_csv(
         return df_out
 
 # %% 
+
+# --- [ FUNCTIONS TO COMPUTE ROCK AMOUNT AND GRAIN SIZE GIVEN A FIXED SA ]
+def collect_data_vars(**kwargs):
+    data_vars={
+            "lambda": (
+                ["radius"], 
+                kwargs.get('lambda_arr'),
+                {
+                    "long_name": "particle roughness factor (function of radius except for smooth or geometric surface area)",
+                    "units": "[]",
+                }
+            ),
+            "volume_sphere": (
+                ["radius"], 
+                kwargs.get('v_sphere'),
+                {
+                    "long_name": "volume of a single sphere",
+                    "units": "m3",
+                }
+            ),
+            "mass_sphere": (
+                ["radius"], 
+                kwargs.get('m_sphere'),
+                {
+                    "long_name": "mass of one sphere",
+                    "units": "kg",
+                }
+            ),
+            "sa_sphere": (
+                ["radius"], 
+                kwargs.get('sa_sphere'),
+                {
+                    "long_name": "surface area of one sphere",
+                    "units": "m2",
+                }
+            ),
+            "n_spheres": (
+                ["radius"], 
+                kwargs.get('n_spheres'),
+                {
+                    "long_name": "number of spheres required to hit target surface area (accounting for roughness)",
+                    "units": "[]",
+                }
+            ),
+            "mass_rock": (
+                ["radius"], 
+                kwargs.get('m_rock'),
+                {
+                    "long_name": "mass of rock required to hit target surface area",
+                    "units": "kg",
+                }
+            ),
+        }
+    if 'sa_fixed' not in kwargs.get('other_output_dims'):
+        data_vars['sa_fixed'] = (
+                [],
+                kwargs.get('SA_FIXED'),
+                {
+                    "long_name": "constant surface area for all radius - app amount combinations",
+                    "units": "m2",
+                }
+            )
+    if 'lambda_model' not in kwargs.get('other_output_dims'):
+        data_vars['lambda_model'] = (
+            [],
+            kwargs.get('lambda_model'),
+            {
+                "long_name": "Name of the model used to calculate lambda",
+                "units": "[]"
+            }
+        )
+    if 'feedstock' not in kwargs.get('other_output_dims'):
+        data_vars['feedstock'] = (
+            [],
+            kwargs.get('feedstock'),
+            {
+                "long_name": "Name of rock feedstock",
+                "units": "[]"
+            }
+        )
+    return data_vars
+
+def collect_coords(**kwargs):
+    coords={
+        "radius": (
+            ["radius"],
+            kwargs.get('radii'),
+            {
+                "long_name": "grain radius",
+                "units": "m"
+            }
+        )
+    }
+    return coords
+
+
+# [ prepare dicts for calculation ]
+# set densities
+scepter_densities = { # [g cm-3]
+    'amnt': 1.725,   
+    'cc': 2.71,
+    'gbas': 3.0,   # confirmed in scepter_richards.f90 "! assuming 3.0 g/cm3 particle density"
+}
+
+# [ roughness factor equations ]
+def nsb07(r):
+    return 10**3.3 * r**0.33
+def bm00(r):
+    return 10**0.7 * r**-0.1
+def l21a(r):
+    return np.maximum(2.02*np.log10(r) + 10.126, 1)
+def l21b(r): # ridiculously high numbers
+    return 10**(154.25 * np.exp(1.0219 * np.log10(r)))
+def smooth(r):
+    return np.repeat(1., len(r))
+
+
+
+# pull lambda functions together
+lambda_fxns = {
+    'nsb07': nsb07,
+    'bm00': bm00,
+    'l21a': l21a,
+    'l21b': l21b,
+    'smooth': smooth,
+}
+
+def rockmass_given_sa(
+        SA_FIXED: float,   # [m2]
+        FEEDSTOCK: str,    # []
+        radii: np.array,     # [m]
+        lambda_model: str, # [] name of the roughness factor eq'n
+        scepter_densities: dict = scepter_densities, # [g cm-3]
+        lambda_fxns: dict = lambda_fxns,
+        other_output_dims: list = ['lambda_model', 'feedstock', 'sa_fixed'],
+):
+    """
+    Given a target surface area, radius, and roughness factor, calculate the
+    amount of rock we need to add. Account for rock density and roughness
+    factor equation (defined in external fxns).
+
+    Parameters
+    ----------
+    SA_FIXED : float
+        [m2] target total surface area of applied rock in m2
+    FEEDSTOCK : str
+        [] name of the feedstock to use (must be in "scepter_densities" dict)
+    radii : np.array
+        [m] 1d array of particle radii input
+    lambda_model : str
+        [] name of the roughness factor (lambda) parameterization to use
+    scepter_densities : dict
+        [g cm-3] feedstock densities; ex: {'gbas': 3.0}; where values 
+        are in g/cm3 and converted to kg/m3 in the function
+    lambda_fxns : dict
+        [] dictionary of functions that read in radius array and return lambda array
+    other_output_dims : list
+        [] list of strings naming the output dimensions to add to the xr.dataset. 
+        Radius is a guaranteed dim. OPTIONS: ["lambda_model", "feedstock", "sa_fixed"]
+    """
+    # [ roughness factor ]
+    lambda_arr = lambda_fxns[lambda_model](radii)
+    # [ volume of one sphere ]
+    v_sphere = (4/3) * 3.14 * radii**3    # [m3]
+    # [ mass of one sphere ]
+    m_sphere = (scepter_densities[FEEDSTOCK] * 1e3) * v_sphere # [kg]
+    # [ surface area of one sphere ]
+    sa_sphere = 4 * 3.14 * radii**2    # [m2]
+    # [ number of spheres to hit target SA ]
+    n_spheres = SA_FIXED / (sa_sphere * lambda_arr)
+    # [ required mass of rock ]
+    m_rock = n_spheres * m_sphere
+
+    # put together the output data
+    data_vars = collect_data_vars(**locals())
+    coords = collect_coords(**locals())
+    ds = xr.Dataset(data_vars=data_vars, coords=coords)
+    # add extra dims
+    if 'lambda_model' in other_output_dims:
+        ds = ds.assign_coords(lambda_model=lambda_model).expand_dims("lambda_model")
+    if 'feedstock' in other_output_dims:
+        ds = ds.assign_coords(feedstock=FEEDSTOCK).expand_dims("feedstock")
+    if 'sa_fixed' in other_output_dims:
+        ds = ds.assign_coords(sa_fixed=SA_FIXED).expand_dims("sa_fixed")
+
+    return ds

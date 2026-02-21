@@ -269,7 +269,7 @@ def create_dsdict_across_timeResolutions(
         dictionary of xr.Datasets, each dataset being the same climate data at 
         some different time resolution. 
     '''
-        # --- create datasets for each time resolution 
+    # --- create datasets for each time resolution 
     ds_dict = {}
 
     # [ default resolution ]
@@ -313,10 +313,13 @@ def create_dsdict_across_timeResolutions(
             tmpds_monthly2 = add_decimal_year_coord(tmpds_monthly, roundtime_to=roundtime_to)
             dt = np.diff(tmpds_monthly2.time_years.values)[0]
             ds_dict['monthly'] = tmpds_monthly2.assign_coords(time_years=tmpds_monthly2['time_years'] + dt)
-        else:
-            ds_dict['monthly'] = add_decimal_year_coord(tmpds_monthly, roundtime_to=roundtime_to)
+        else: # (make decimal year outside of `add_decimal_year_coord` functionality because we want even spacing)
+            time = tmpds_monthly['time']
+            time_years_in = (time.dt.year - time.dt.year[0] + (time.dt.month-1)/12)
+            ds_dict['monthly'] = tmpds_monthly.assign_coords(time_years=time_years_in)
 
     # [ monthly ltm ]
+    # this appears to return evenly spaced timesteps even though we start from months
     if monthly_ltm:
         # clim_repeated = xr.DataArray(      # to plot 1-12 over and over for the dsx['time'] period
         #     data=dsvar['time.month'].values,
@@ -340,14 +343,17 @@ def create_dsdict_across_timeResolutions(
             tmpds_yearly2 = add_decimal_year_coord(tmpds_yearly, roundtime_to=roundtime_to, native_timecoord_name='year')
             dt = 0.08333
             ds_dict['yearly'] = tmpds_yearly2.assign_coords(time_years=tmpds_yearly2['time_years'] + dt)
-        else:
-            ds_dict['yearly'] = add_decimal_year_coord(tmpds_yearly, roundtime_to=roundtime_to, native_timecoord_name='year')
+        else: # (do it outside of `add_decimal_year_coord` because we want evenly spaced decimal year grid)
+            time = tmpds_yearly['year']
+            time_years_in = xr.DataArray(np.arange(time.size), dims="year", coords={"year": time})
+            ds_dict['yearly'] = tmpds_yearly.assign_coords(time_years=time_years_in)
+            # ds_dict['yearly'] = add_decimal_year_coord(tmpds_yearly, roundtime_to=roundtime_to, native_timecoord_name='year')
 
     # [ annual ltm ]
     if annual_ltm:
         tmpds_yearly_ltm = dsvar.groupby('time.year').mean(dim='time').mean(dim='year')
         # add time_year with monthly resolution (just the annual mean repeated each month)
-        ds_dict['yearly_ltm'] = tmpds_yearly_ltm.expand_dims(time_years = list(np.linspace(0.08333,1,12)))
+        ds_dict['yearly_ltm'] = tmpds_yearly_ltm.expand_dims(time_years = list(np.linspace(0, 1-0.08333,12)))
     
     return ds_dict 
 

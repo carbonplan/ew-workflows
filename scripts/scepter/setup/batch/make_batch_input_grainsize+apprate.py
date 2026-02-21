@@ -18,23 +18,23 @@ import numpy as np
 import pandas as pd
 
 # --- read in batch helper functions  
-sys.path.append(os.path.abspath('/home/tykukla/ew-workflows/run_scepter'))
-import batch_helperFxns as bhf
+from ew_workflows import batch_helperFxns as bhf
 # ---
 
 # %% 
 # --- USER INPUTS
 # [1] vars to update, constant for all runs
-fertLevel = "no"    # name for how much fertilizer is applied
-dustsp = "cc"      # name for dust species to apply (must be from accepted list)
-extra_tag = "base_psdfull_hiMAT"  # another distinguishing tag
-pref = f"{fertLevel}Fert_{dustsp}_{extra_tag}"
+fertLevel = "low"    # name for how much fertilizer is applied
+dustsp = "baek23"      # name for dust species to apply (must be from accepted list)
+EXP_SET = f"{fertLevel}Fert_{dustsp}"
+extra_tag = "base_psdfull_baek23"  # another distinguishing tag
+pref = f"{EXP_SET}_{extra_tag}"
 clim_tag = None   # [string] year-span (e.g., 1950-2020) for clim input if climate files are used
                   # (if clim files are not used, set to None)
 # save vars
 file_prefix = f"meanAnn_{dustsp}_shortRun_{extra_tag}_{fertLevel}Fert_gs+apprate"  # prefix of output run names
 fn = file_prefix + "_v0.csv"
-savepath_batch = "/home/tykukla/ew-workflows/inputs/scepter/batch"
+savepath_batch = "s3://carbonplan-carbon-removal/ew-workflows-data/scepter/batch/"
 multi_run_split = False   # whether to split the csv into multiple files
 max_iters_per_set = 20    # [int] the number of runs per csv (only used if multi_run_split is True)
 # **************************
@@ -67,7 +67,7 @@ const_dict = {
 
     # --- climate 
     # 'qrun': 1.75,           # [default = None] [m yr-1] runoff
-    'mat': 30,            # [default = None] [m yr-1] mean annual temp
+    # 'mat': 30,            # [default = None] [m yr-1] mean annual temp
 
     # --- surface area and psd rules
     'sa_rule1': False,       # [True, False, "spinvalue"] SA decreases as porosity increases
@@ -85,10 +85,14 @@ const_dict = {
     
     # --- compute specific
     'aws_save': "move",              # ["move", "copy", None] whether to "move" file to aws, just copy it, or nothing at all
-    'aws_bucket': "s3://carbonplan-carbon-removal/SCEPTER/scepter_output_scratch/",  # where to save at AWS (only used if 'aws_save'=True)
-    
+    'aws_bucket': f"s3://carbonplan-carbon-removal/SCEPTER/scepter_output/{EXP_SET}",  # where to save at AWS (only used if 'aws_save'=True)
+
+    # --- other
+    'skip_lab_run': True,
+    'spindir': "s3://carbonplan-carbon-removal/SCEPTER/scepter_output/spinups/",
+
     # --- which executable to use
-    'scepter_exec_name': 'scepter'  # ['scepter', 'scepter_rateA', ...]
+    'scepter_exec_name': 'scepter_richards'  # ['scepter', 'scepter_rateA', ...]
 }
 
 # %% 

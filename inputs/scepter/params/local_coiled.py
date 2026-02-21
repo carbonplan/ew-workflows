@@ -59,3 +59,21 @@ ph_react = {
     "spot_policy": "on-demand",    # "spot_with_fallback" [ can be deleted, but much cheaper ]
     "tag": {"Project": "scepter"},
 }
+
+simplerun = {
+    "run-script": 'simplerun_cec.py',
+    "batch-input-dir": 's3://carbonplan-carbon-removal/ew-workflows-data/scepter/batch/',
+    "default-dict": 'NA',  # see SCEPTER/defaults/dict_singlerun.py
+    "model-dir": '/home/jovyan/SCEPTER/',
+    "save-dir": 's3://carbonplan-carbon-removal/ew-workflows-data/TMP-TEST/',
+    "container": 'quay.io/carbonplan/ew-workflows:latest',
+    "multiyear": False,     # whether we're in multi-year mode (affects path building)
+
+    # [ coiled-specific ; optional (the driver has defaults) ]
+    "container-home": "/home/jovyan/",
+    "vm_type": "m6i.large",      # make sure it's compatible with the container and arm selection (https://instances.vantage.sh)
+    "arm": False,
+    "region": "us-west-2",
+    "spot_policy": "on-demand",    # "spot_with_fallback" [ can be deleted, but much cheaper ]
+    "tag": {"Project": "scepter"},
+}

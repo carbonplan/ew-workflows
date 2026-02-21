@@ -1,20 +1,22 @@
 #!/usr/bin/env python3
 """
-Driver to submit CSV rows as per-task env var dicts to Coiled Batch.
+Driver to submit individual dicts as per-task env var dicts to Coiled Batch.
+Script is given a name of a batch directory of jsons where each json corresponds
+to a single run. The full path to the batch dir comes from combining batchDirName
+with `local_coiled.py`.
 
 Usage:
-  uv run python3 batch-driver.py <batchName> <paramName>
+  uv run python3 batch-driver-dicts.py <batchDirName> <paramName>
 Example:
-  uv run python3 batch-driver.py _test-batch-n6.csv singlerun
-  uv run python3 batch-driver.py _test-batch-richards-n6.csv singlerun
+  uv run python3 batch-driver-dicts.py cec_simpleTitrate/caOnly/ simplerun
 
-Where <batchName> is the CSV filename (in S3 under batch-input-dir configured in local_coiled.py)
+Where <batchDirName> is the name of a directory of .json files to be read in as dicts (1 json per run)
 and <paramName> is the key name of a dictionary in inputs/scepter/params/local_coiled.py.
 
 This script will:
  - import local_coiled params dict
- - fetch CSV from S3 (or local file when S3 not configured)
- - create one per-row dict, and submit via coiled.batch.run with map_over_task_var_dicts
+ - read filenames from the dir of jsons
+ - create commands for the batch of runs
  - set TASK_INPUT_KEYS and SAVE_DIR job-level env vars so the worker knows where to persist
 """
 # %% 
@@ -34,7 +36,7 @@ MAX_TASKS_PER_BATCH = 300   # avoid overloading coiled with too many tasks at on
 # ====================================================================================================
 # # [ DEBUG: fake sys.args ]
 # import sys
-# sys.argv = ["batch-driver.py", "longrun_monthly_ltm_annual_v0_test.csv", "singlerun"]
+# sys.argv = ["batch-driver-dicts.py", "cec_simpleTitrate/caOnly", "simplerun"]
 # ====================================================================================================
 
 # --- parse inputs
@@ -51,19 +53,13 @@ bucket_dir = os.environ.get("BATCH_INPUT_DIR_OVERRIDE") or params.get("batch-inp
 if not bucket_dir:
     raise ValueError("batch-input-dir not found in params")
 
-rows = chf.read_csv_from_s3_or_local(bucket_dir, args.batchName)
-print(f"Read {len(rows)} rows from {bucket_dir}/{args.batchName}")
+json_list = chf.list_json_files(os.path.join(bucket_dir, args.batchName), return_type='dict')
+print(f"Read {len(json_list)} json names from {bucket_dir}/{args.batchName}")
 
-
+# %% 
 # --- submit batch -------------------
-worker_script="batch-worker.py"
+worker_script="batch-worker-dicts.py"
 container_home = params.get("container-home", "/home/jovyan/")
-
-# create task dicts
-task_dicts = chf.create_task_dicts(rows)
-
-# The list of keys we passed (for the worker to know which keys to persist)
-keys = list(rows[0].keys()) if rows else []
 
 # Configure submission
 save_dir = params.get("save-dir")  # try top level first
@@ -75,7 +71,6 @@ if not save_dir:
     save_dir = "/scratch/batch"
 
 job_env = {
-    "TASK_INPUT_KEYS": ",".join(keys),
     "SAVE_DIR": save_dir,
     "COILED_SAVE_DIR": save_dir,  # set both to ensure it's picked up
     # --- scepter-specific
@@ -83,19 +78,18 @@ job_env = {
     "MODEL_DIR": params.get("model-dir", ""),
     "RUN_SCRIPT": params.get("run-script", ""),
 }
+
 # %% 
 # If DRY_RUN is set, don't call Coiled; just print a summary and return a fake response
 if os.environ.get("DRY_RUN"):
     print("DRY_RUN: would submit with the following parameters:")
-    print(f"  tasks: {len(task_dicts)}")
-    print(f"  keys: {keys}")
+    print(f"  tasks: {len(json_list)}")
     print(f"  job_env: {job_env}")
     print(f"  vm_type: {params.get('vm_type', 'm8g.xlarge')}")
-    print(f"dry_run: TRUE ; n_tasks: {len(task_dicts)}")
-
+    print(f"dry_run: TRUE ; n_tasks: {len(json_list)}")
 else:
     all_results = []
-    for i, task_chunk in enumerate(chf.tasklist_to_chunks(task_dicts, MAX_TASKS_PER_BATCH)):
+    for i, task_chunk in enumerate(chf.tasklist_to_chunks(json_list, MAX_TASKS_PER_BATCH)):
         # Submit using map_over_task_var_dicts so each task receives its env vars
         res = coiled.batch.run(
             # command=f"python3 {worker_script}",
@@ -127,4 +121,5 @@ else:
         all_results.append(res)
 
         coiled.batch.status()
-# %%
+
+

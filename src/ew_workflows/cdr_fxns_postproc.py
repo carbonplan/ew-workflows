@@ -632,6 +632,7 @@ def cdr_int_per_group(
     calc_list: list,
     dfin_cols_to_keep: list,
     bysite: bool=False,
+    ctrl_params: list=None,
 ) -> Tuple[dict, dict]:
     """
     Compute CDR (or difference from control) for each of the methods
@@ -677,7 +678,7 @@ def cdr_int_per_group(
         tc = 'co2_flx'
         print(f"solving {tc}")
         dfin = flx_dict[tc]
-        outdict_full[tc], outdict_sum[tc] = co2_flx_cdr(dfin, time_horizon, dfin_cols_to_keep, bysite=bysite)
+        outdict_full[tc], outdict_sum[tc] = co2_flx_cdr(dfin, time_horizon, dfin_cols_to_keep, bysite=bysite, ctrl_params=ctrl_params)
 
     # --- OPTION 2: "camg_flx" -----------------------
     if "camg_flx" in calc_list:
@@ -686,7 +687,7 @@ def cdr_int_per_group(
         dfin = flx_dict[tc]
         # (note, we use the same cation_flx_cdr fxn for both camg and totcat
         #  because it just calculates based on whatever cats are provided)
-        outdict_full[tc], outdict_sum[tc] = cation_flx_cdr(dfin, time_horizon, dfin_cols_to_keep, cation_tag=tc, bysite=bysite)
+        outdict_full[tc], outdict_sum[tc] = cation_flx_cdr(dfin, time_horizon, dfin_cols_to_keep, cation_tag=tc, bysite=bysite, ctrl_params=ctrl_params)
     
     # --- OPTION 3: "totcat_flx" ---------------------
     if "totcat_flx" in calc_list:
@@ -695,7 +696,7 @@ def cdr_int_per_group(
         dfin = flx_dict[tc]
         # (note, we use the same cation_flx_cdr fxn for both camg and totcat
         #  because it just calculates based on whatever cats are provided)
-        outdict_full[tc], outdict_sum[tc] = cation_flx_cdr(dfin, time_horizon, dfin_cols_to_keep, cation_tag=tc, bysite=bysite)
+        outdict_full[tc], outdict_sum[tc] = cation_flx_cdr(dfin, time_horizon, dfin_cols_to_keep, cation_tag=tc, bysite=bysite, ctrl_params=ctrl_params)
     
     # --- OPTION 4: "carbalk_flx" --------------------
     if "carbalk_flx" in calc_list:
@@ -720,6 +721,7 @@ def co2_flx_cdr(
     time_horizon: float,
     dfin_cols_to_keep: list,
     bysite: bool = False,
+    ctrl_params: list = None,
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """
     Read in the Pandas DataFrame for the co2flx data 
@@ -736,6 +738,13 @@ def co2_flx_cdr(
         list of columns from dfin that we want to keep in the output files
     bysite : bool
         [True] if dfin includes more than one site, otherwise [False]
+    ctrl_params : list
+        OVERWRITES `bysite`! If multiple parameters are needed to find the control case (e.g., if you vary
+        across sites and climate resolution, you might want a site-climRes control), 
+        list the columns here that we need to match between the case df `tdf` and the
+        ctrl df `tdf_ctrl` (the latter is just the runs with no dustflux, so we need 
+        to narrow it down furthar). (it extends the bysite functionality to multiple 
+        params.)
     
     Returns
     -------
@@ -748,8 +757,6 @@ def co2_flx_cdr(
     cols_to_keep.extend(dfin_cols_to_keep)
 
     # get control run
-    df_ctrl = dfin.loc[dfin['ctrl'] == True]
-    # get control runs
     df_ctrl = dfin.loc[dfin['ctrl'] == True]
     if not bysite: 
         # only the numeric columns for interpolation
@@ -771,9 +778,15 @@ def co2_flx_cdr(
         tdfout = tdf[cols_to_keep].copy()
 
         # get control if going by site
-        if bysite:
+        if bysite and not ctrl_params:
             # find the control case (only the numeric columns for integration)
             tdf_ctrl = df_ctrl[df_ctrl['site'] == tdf['site'].values[0]].select_dtypes(include=[np.number])
+        elif ctrl_params:
+            # find the match across multiple columns
+            mask = np.logical_and.reduce(
+                [df_ctrl[c] == tdf[c].iloc[0] for c in ctrl_params]
+            )
+            tdf_ctrl = df_ctrl.loc[mask].select_dtypes(include=[np.number])
 
         # if case and control are different lengths, we need to interpolate
         # (this happens sometimes due to shifts in how the timesteps are handled in a given run)
@@ -856,6 +869,7 @@ def cation_flx_cdr(
     dfin_cols_to_keep: list,
     cation_tag: str,
     bysite: bool=False,
+    ctrl_params: list=None,
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """
     Read in the Pandas DataFrame for the co2flx data 
@@ -876,6 +890,13 @@ def cation_flx_cdr(
         magnesium
     bysite : bool
         [True] if dfin includes more than one site, otherwise [False]
+    ctrl_params : list
+        OVERWRITES `bysite`! If multiple parameters are needed to find the control case (e.g., if you vary
+        across sites and climate resolution, you might want a site-climRes control), 
+        list the columns here that we need to match between the case df `tdf` and the
+        ctrl df `tdf_ctrl` (the latter is just the runs with no dustflux, so we need 
+        to narrow it down furthar). (it extends the bysite functionality to multiple 
+        params.)
     
     Returns
     -------
@@ -909,9 +930,15 @@ def cation_flx_cdr(
         tdfout = tdf[cols_to_keep].copy()
 
         # get control if going by site
-        if bysite:
+        if bysite and not ctrl_params:
             # find the control case (only the numeric columns for integration)
             tdf_ctrl = df_ctrl[df_ctrl['site'] == tdf['site'].values[0]].select_dtypes(include=[np.number])
+        elif ctrl_params:
+            # find the match across multiple columns
+            mask = np.logical_and.reduce(
+                [df_ctrl[c] == tdf[c].iloc[0] for c in ctrl_params]
+            )
+            tdf_ctrl = df_ctrl.loc[mask].select_dtypes(include=[np.number])
 
         # if case and control are different lengths, we need to interpolate
         # (this happens sometimes due to shifts in how the timesteps are handled in a given run)
@@ -1278,7 +1305,8 @@ def emissions_calculator_ds(
     barge_km_grid: np.array = np.linspace(0, 400, 20),
     barge_diesel_km_grid: np.array = np.linspace(0, 400, 20),
     efactor_overwrite: bool=None,
-    bwi_overwrite: bool=None
+    bwi_overwrite: bool=None,
+    expand_over_time: bool=False,
 )->xr.Dataset:
     '''
     Given a dataset with coordinates for the amount and grain size of dust,
@@ -1320,6 +1348,12 @@ def emissions_calculator_ds(
     efactor_overwrite : float
         if we don't want to use the default e factor we can overwrite it here.
         only overwritten if it's a value > 0
+
+    # -- other -- # 
+    expand_over_time : bool
+        if True, expand the per-year data over time horizon coordinate
+        and compute the cumulative emissions at each time step. Otherwise,
+        do nothing
     
     Returns
     -------
@@ -1434,6 +1468,25 @@ def emissions_calculator_ds(
     for var in ['E_transport_perHa', 'E_crush_perHa', 'E_total_perHa']:
         dsout[var].attrs["units"] = "tonne CO2e / ha"
         dsout[var].attrs["long_name"] = "Tonnes of CO2e emitted per hectare, cumulative over the time_horizon"
+
+    # --- expand over time if desired
+    if expand_over_time:
+        # vars to expand over time 
+        vars_to_expand = ["E_transport_perYr", "E_total_perYr", "E_crush_perYr"]
+        time = ds["time"]
+        # get timestep lengths (yr)
+        dt = time.diff("time")
+        dt = dt.reindex(time=time, method="bfill")
+        # broadcast vars over time
+        tmp_dsout = dsout[vars_to_expand].broadcast_like(ds["time"])
+        # get cumulative emissions
+        for var in vars_to_expand:
+            dsout[var] = tmp_dsout[var]
+            dsout[f'{var}_int'] = (tmp_dsout[var] * dt).cumsum("time")
+            # add attributes
+            dsout[f'{var}_int'].attrs["units"] = "cumulative tonne CO2e / ha / year"
+            dsout[f'{var}_int'].attrs["long_name"] = "Cumulative tonnes of CO2e emitted per hectare of application per year"
+
 
     # ... return result
     return dsout
@@ -2090,8 +2143,8 @@ def read_profile_nc(
         path to the SCEPTER output directory. Usually something like 'my/path/SCEPTER/scepter_output'
     filename_base : str
         base name of the SCEPTER flx file. Format is "[basename].pkl"
-    tdf : pd.Series
-        single row of the batch df containing the info for this specific run
+    tdf : pd.Series OR dict
+        single row of the batch df containing the info for this specific run. Must have 'newrun_id_full'
     subdir : str
         name of the subdirectory within the run output directory where we'll fine the filename_base file
     '''
@@ -2305,6 +2358,90 @@ def prof_batchprocess_singlevar(
     return dsout
 
 
+def prof_batchprocess_singlevar_dictpattern(
+    rundicts: dict,
+    outdir: str,
+    batch_axes: list,
+    filename_base: str,
+    dustsp: str=None,
+    subdir: str = "postproc_profs",
+    rockAmend_flag: bool=True,
+) -> xr.Dataset:
+    '''
+    read in individual nc files from the postproc_profs directory
+    and combine them into a single file defined over dimensions 
+    in batch_axes. Works for batches of runs that use a single rundict
+    as a json per run rather than a batch.csv and default dict. 
+
+    Parameters
+    ----------
+    rundicts : dict of dicts
+        dict where each element is a rundict for a given run, and the key is the name of the 
+        run. 
+    outdir : str
+        path to the SCEPTER output directory. Usually something like 'my/path/SCEPTER/scepter_output'
+    batch_axes : list
+        list of dimensions for the xr dataset. must correspond to columns in dfin.
+        the profile equivalent of 'dfin_cols_to_keep' in flux postprocessing land
+    filename_base : str
+        name of the .nc file excluding '.nc'
+    dustsp : str
+        name of the dust species (only required if we're reading in the dust 
+        data to get the integrated dust flux)
+    subdir : str
+        name of the subdirectory where the .nc files are stored
+    rockAmend_flag : bool
+        True if you added dust / want to compute dustrates in all profiles. False otherwise. 
+    
+    Returns
+    -------
+    xr.Dataset
+        combination of all xarray datasets in the batch
+    '''
+
+    # loop through all runs
+    ds_list = []
+
+    for key, rundict in rundicts.items():
+        # read in this nc file
+        tmpds = read_profile_nc(outdir, filename_base, rundict)
+        # skip if no profile was returned
+        if tmpds is None:
+            continue
+
+        if rockAmend_flag:
+            # --- read in rockdiss to get true int dustrate 
+            dustrate_mean, dustdf = get_timemean_dustrate(outdir, rundict, dustsp, return_df=True)
+            # --- add a rock application variable 
+            # (unless the file is "soil_ph" because the field time and 
+            #  lab time dims are different (!))
+            if filename_base != "soil_ph":
+                dustds = xr.Dataset.from_dataframe(dustdf.set_index("time"))
+                # get in the same time coordinates
+                dustds = dustds.reindex(time=tmpds["time"])
+                # merge 
+                tmpds = xr.merge([tmpds, dustds['int_dust_ton_ha_yr']])
+        
+        # --- assign coords
+        for col in batch_axes:
+            if (col == "dustrate_ton_ha_yr") and (dustrate_mean is not None):
+                tmpds = tmpds.assign_coords({col: (col, [dustrate_mean])})   # add coord
+            else:
+                tmpds = tmpds.assign_coords({col: (col, [rundict[col]])})   # add coord
+            tmpds = tmpds.assign({var: tmpds[var].expand_dims(col) for var in tmpds.data_vars})    # assign coord to all data vars
+
+        # --- add to the output list
+        ds_list.append(tmpds)
+
+    # --- remove any datasets whose time coords are off 
+    #     (indicating failed or incomplete run)
+    ds_list = filter_mismatched_time_coords_fuzzy(ds_list, filename_base)
+    dsout = xr.merge(ds_list)
+
+    # return result
+    return dsout
+
+
 # dictionary for which files to process in the batch profile functions
 proc_dict_default = {
     "adsorbed": False,
@@ -2391,6 +2528,75 @@ def prof_batchprocess_allvars(
     # return result
     return outdict
 
+
+def prof_batchprocess_allvars_dictpattern(
+    outdir: str,
+    dustsp: str,
+    rundicts: dict,
+    batch_axes: list,
+    proc_dict: dict=proc_dict_default,
+    subdir: str="postproc_profs",
+    print_loop_updates: bool=False,
+    rockAmend_flag: bool = True,
+
+) -> dict:
+    '''
+    Wrapper around prof_batchprocess_singlevar to repeat that function for all
+    variables in the proc_dict. Works for batches that use run-specific dictionaries
+    rather than a batch.csv and default dict. 
+
+    Parameters
+    ----------
+    outdir : str
+        path to the SCEPTER output directory. Usually something like 'my/path/SCEPTER/scepter_output'
+    dustsp : str
+        name of the dust species (only required if we're reading in the dust 
+        data to get the integrated dust flux)
+    rundicts : dict of dicts
+        dict where each element is a rundict for a given run, and the key is the name of the 
+        run. 
+    batch_axes : list
+        list of dimensions for the xr dataset. must correspond to columns in dfin.
+        the profile equivalent of 'dfin_cols_to_keep' in flux postprocessing land
+    proc_dict : dict
+        keys should be `filename_base` value inputs to prof_batchprocess_singlevar.
+        Values should be True | False. True means the prof_batchprocess_singlevar 
+        function will be run
+    subdir : str
+        name of the subdirectory where the .nc files are stored (not used for now 
+        because there's a default set in prof_batchprocess_singlevar)
+    print_loop_updates : bool
+        True to print out the profile variable currently being compiled. 
+    rockAmend_flag : bool
+        True if you added dust / want to compute dustrates in all profiles. False otherwise. 
+    
+    Returns
+    -------
+    dict
+        dictionary where each key is a filename_base from proc_dict elements
+        with values == True. Each value in the output dict is an xarray 
+        dataset with the batch_postprocess result. 
+    '''
+    # empty dict to hold results
+    outdict = {}
+    # update user 
+    print(f"compiling profile data for {dustsp}")
+
+    # loop through the process dict
+    for key, runme in proc_dict.items():
+        if print_loop_updates:
+            print(key)
+        if runme:
+            ds = prof_batchprocess_singlevar_dictpattern(rundicts, outdir, batch_axes, key, dustsp, rockAmend_flag=rockAmend_flag)
+            # make sure it's not empty
+            if not ds.variables: # continue to next iter if it is empty
+                print(f"Warning: batch profile processing {key} returned no results. Check for typos?")
+                continue
+            # ori suggests: print(outdict)
+            outdict[key] = ds
+            # ds.to_netcdf()
+    # return result
+    return outdict
 
 
 def save_batch_postproc_profOnly(
@@ -2543,6 +2749,7 @@ def create_save_dict_oneFS_noEmiss(
     time_horizon: float, 
     outdir: str,
     batchdir: str,
+    EXP_GROUP: str=None,
 )->dict:
     """
     Combine all inputs into a pre-formatted dictionary that 
@@ -2551,10 +2758,54 @@ def create_save_dict_oneFS_noEmiss(
     savedict = {
         "Setup": {
             # "site": thissite,
+            "EXP_GROUP": EXP_GROUP,
             "EXP_SET": EXP_SET,
             "cdvars": cdr_calc_list,
             "group_vars": group_vars,
             "collapse_cols": collapse_cols,
+            "csv": csv_fn,
+            "multiyear": multiyear,
+            "outdir": outdir,
+            "batchdir": batchdir,
+        },
+        "Removal accounting": {
+            "time_horizon": time_horizon,
+        },
+        
+    }
+
+    return savedict
+
+
+
+def create_save_dict_oneFS_emiss(
+    EXP_SET: str,
+    cdr_calc_list: list,
+    group_vars: list,
+    collapse_cols: list,
+    csv_fn: str,
+    multiyear: bool, 
+    time_horizon: float, 
+    outdir: str,
+    batchdir: str,
+    p80_input: float,
+    Efactor_org: str,
+    EXP_GROUP: str=None,
+)->dict:
+    """
+    Combine all inputs into a pre-formatted dictionary that 
+    we'll save as a .res file. 
+    """
+    savedict = {
+        "Setup": {
+            # "site": thissite,
+            "EXP_GROUP": EXP_GROUP,
+            "EXP_SET": EXP_SET,
+            "cdvars": cdr_calc_list,
+            "group_vars": group_vars,
+            "collapse_cols": collapse_cols,
+            "p80_input": p80_input,
+            "Efactor_org": Efactor_org,
             "csv": csv_fn,
             "multiyear": multiyear,
             "outdir": outdir,
