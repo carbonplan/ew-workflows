@@ -3,12 +3,15 @@ name = "ew-workflows"
 readme = "README.md"
 version = "0.1.0"
 
-requires-python = ">=3.11"
+requires-python = "==3.13.5"
 dependencies = [
+    "bokeh>=3.8.2",
     "cartopy>=0.25.0",
     "cmocean>=4.0.3",
     "coiled>=1.120.0",
+    "dask>=2026.1.2",
     "distributed>=2024.8.0",
+    "flox>=0.11.1",
     "gcsfs>=2026.2.0",
     "geopandas>=1.1.2",
     "h5netcdf>=1.7.3",
@@ -22,7 +25,7 @@ dependencies = [
     "s3fs>=2025.9.0",
     "scipy>=1.16.3",
     "toml>=0.10.2",
-    "xarray",
+    "xarray[accel]",
     "zarr>=2.18.2",
 ] 
 
