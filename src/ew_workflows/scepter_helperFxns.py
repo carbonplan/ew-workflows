@@ -786,6 +786,61 @@ def check_scepter_exec(
         print(f"{scepter_exec_name} already exists and is executable in {rundir}.")
 
 
+def check_for_dust_file_and_zero_out_if_needed(path, dust1_dict):
+    """
+    If Dust_temp.in exists and dust1_dict[added_sp] == 0,
+    set the second column values to zero.
+    """
+    # check file existence (local or S3)
+    if path.startswith("s3://"):
+        fs = fsspec.filesystem("s3")
+        exists = fs.exists(path)
+    else:
+        exists = os.path.exists(path)
+
+    if not exists:
+        return "continue" # file doesn't exist so we continue making it 
+    
+
+    # check if control
+    control_run = False
+    added_sp = list(dust1_dict.keys())[0]
+    if dust1_dict[added_sp] == 0:
+        control_run = True
+
+    if not control_run:
+        return "stop" 
+    
+    # ---- Read file ----
+    if control_run:
+        if path.startswith("s3://"):
+            with fsspec.open(path, "r") as f:
+                header = f.readline().rstrip("\n")
+                df = pd.read_csv(f, sep=r"\s+", header=None)
+        else:
+            with open(path, "r") as f:
+                header = f.readline().rstrip("\n")
+                df = pd.read_csv(f, sep=r"\s+", header=None)
+
+        # ---- Zero out second column ----
+        if df.shape[1] < 2:
+            raise ValueError("Dust_temp.in does not have at least two columns.")
+
+        df.iloc[:, 1] = 0.0
+
+        # ---- Write file back ----
+        if path.startswith("s3://"):
+            with fsspec.open(path, "w") as f:
+                f.write(header + "\n")
+                df.to_csv(f, sep="\t", header=False, index=False, float_format="%.8e")
+        else:
+            with open(path, "w") as f:
+                f.write(header + "\n")
+                df.to_csv(f, sep="\t", header=False, index=False, float_format="%.8e")
+    
+    return "stop_controlAccounted"
+
+
 def create_dust_input(
     outdir: str, 
     runname: str,
@@ -851,6 +906,15 @@ def create_dust_input(
     # assign taudust
     if not taudust:
         taudust = taudust_default
+
+    # ---------------------
+    # check that we need to go ahead and make the file 
+    # (stop if it already exists, or change it to zero flux if it exists but this is a control run)
+    # ---------------------
+    path = os.path.join(outdir, runname, output_filename)
+    continue_check = check_for_dust_file_and_zero_out_if_needed(path, dust1_dict)
+    if continue_check != "continue":
+        return f"{output_filename} already exists"
 
     # ---------------------
     # Read times from q_temp.in (first column)
@@ -1071,6 +1135,220 @@ def create_dust_input(
         return outpath
     
 
+def create_dust_input_from_gcam_df(
+        outdir: str,
+        climpath: str,
+        df: pd.DataFrame,
+        t_add: float,
+        taudust: float,
+        output_filename: str = "Dust_temp.in",
+        dryrun: bool=False,
+)->str:
+    """
+    Create a tab-delimited dust input file for the model. The dust input file
+    (`Dust_temp.in`) has two columns: time (years) and the unscaled dust 
+    application flux (g/m2/yr). The model figures out the true application 
+    flux for each species by multiplying the unscaled flux from `Dust_temp.in` 
+    by the value in `dust.in` for that given species. 
+
+    This version builds the Dust_temp.in file from a pandas dataframe with the 
+    rock flux in t/ha/yr and time. 
+
+    - Reads time grid from: <outdir>/<runname>/q_temp.in
+      (expects whitespace-separated file, time in first column, units = years).
+    - Reads annual dust fluxes from the dust lists
+    - Solves the un-scaled flux:
+        Note: dust.in values are relative weight ratios of each species.
+        they don't have to add to one, but total application is 
+          `Dust_temp.in` x `dust.in`[species_n] 
+        for each species. To solve for the total g/m2/yr to spread across
+        Dust_temp.in, we can use 
+          fdust[species_n] / `dust.in`[species_n]
+        which should yield the same result for all feedstocks if everything
+        was done correctly. 
+    - t_add: fractional time into each year when the dust is applied (0.0 - 1.0)
+    - The function outputs rates (g/m2/yr) for each time step such that integrating
+      rate * dt over the distribution window results in the annual mass equal to the
+      dust dict amount. The dust is spread over a window of length:
+          L = max(duration_from_frame_in, timestep_at_event)
+      and partial overlaps with irregular timesteps are handled.
+    - Writes file with header "# time(yr)\tdust(g/m2/yr)"
+      and returns the full path of the created file.
+
+    Returns:
+        path to created file (str)
+    Raises:
+        FileNotFoundError if q_temp.in or frame.in cannot be found.
+        ValueError for malformed files or invalid t_add.
+    """
+    # ---------------------
+    # Read times from q_temp.in (first column)
+    # ---------------------
+    qtemp_path = os.path.join(climpath, 'q_temp.in')
+    with fsspec.open(qtemp_path, "r") as f:
+        times = np.loadtxt(f, comments="#", usecols=0)
+    # sort just in case
+    sort_idx = np.argsort(times)
+    times = times[sort_idx]
+
+    # compute timestep durations dt for each index (interval [t[i], t[i]+dt[i]))
+    n = times.size
+    dt = np.empty(n, dtype=float)
+    if n == 1:
+        # single time point: assume a default small dt or use 1.0 yr?
+        # We'll default to dt = 1.0 for safety (user rarely has single timepoint)
+        dt[:] = 1.0
+    else:
+        dt[:-1] = times[1:] - times[:-1]
+        # last dt use same as previous (reasonable default)
+        dt[-1] = dt[-2] if n >= 2 else dt[0]
+
+    # ---- build output dict if dryrun
+    if dryrun:
+        outdict = {
+            "time_yr": times,
+            "dt": dt,
+        }
+
+    # ------------------------------
+    # set up annual dust dict
+    # ------------------------------
+    # [ convert dust to g/m2/yr ]
+    # 100 g/m2/yr = 1 t/ha/yr
+    df['rockflx_g_m2'] = (df['rockflx_t_ha'] * 100).astype(float)
+    # [ get time in decimal years starting at zero ]
+    df['time_yr'] = df['time'] - df['time'].min()
+    # [ confirm that time is in years ]
+    yrcounts = df['time'].value_counts().sort_index()
+    if (yrcounts != 1).any():
+        print("Warning: Dust data has more than one value per year for at least one year. Taking mean.")
+    # if multiple rows per year, take mean
+    df["year"] = np.floor(df["time_yr"]).astype(int)
+    df_year = (
+        df.groupby("year")["rockflx_g_m2"]
+        .mean()
+        .reset_index()
+    )
+    annual_dust_dict = dict(
+        zip(df_year["year"], df_year["rockflx_g_m2"])
+    )
+
+    # Prepare output arrays (rates in g/m2/yr at each time point)
+    rates = np.zeros_like(times, dtype=float)
+    cumrates = np.zeros_like(times, dtype=float) # for dryrun only
+
+    # Helper: find index i where times[i] <= t_event < times[i] + dt[i]
+    def find_interval_index(t_event: float) -> Optional[int]:
+        # if event is before first time or after last interval, return None
+        if t_event < times[0] or t_event >= times[-1] + dt[-1]:
+            return None
+        # binary search for i such that times[i] <= t_event < times[i] + dt[i]
+        lo = 0
+        hi = n - 1
+        while lo <= hi:
+            mid = (lo + hi) // 2
+            start = times[mid]
+            end = start + dt[mid]
+            if start <= t_event < end:
+                return mid
+            if t_event < start:
+                hi = mid - 1
+            else:
+                lo = mid + 1
+        # fallback linear search
+        for i in range(n):
+            if times[i] <= t_event < times[i] + dt[i]:
+                return i
+        return None
+
+    # Determine which integer years to consider: from floor(min time) up to floor(max_time)
+    year_start = math.floor(times[0])
+    # consider events up to last time (if last event falls exactly at end, included if within last+dt)
+    year_end = math.floor(times[-1])  # inclusive
+    # but also include year_end+1 if t_add places event within final interval
+    # We'll loop year from year_start to year_end inclusive, then check event_time bounds
+
+    for year in range(year_start, year_end + 1):
+        total1 = 0.  # for dryrun only
+        t_event = float(year) + float(t_add)
+        idx = find_interval_index(t_event)
+        if idx is None:
+            # event outside simulation window -> skip
+            continue
+        # local timestep containing event
+        dt_event = dt[idx]
+        # spread length L = max(dt_event, duration_min)
+        L = max(float(dt_event), float(taudust))
+        # (remove floating point issues w/ L)
+        L = np.round(L, 6)
+        if dryrun: # troubleshoot
+            print(f"Spread length: {L}")
+        # distribution window [start, end)
+        start = t_event
+        end = t_event + L
+
+        # For each timestep, compute overlap with [start,end) and allocate proportionally
+        # Determine annual application mass A for this year
+        A = annual_dust_dict.get(year, 0.0)
+        
+        if A == 0.0:
+            continue
+        # contribution mass per timestep = A * (overlap / L)
+        # rate contribution = contribution_mass / dt[i]  (units g/m2/yr)
+        for i in range(n):
+            step_start = float(times[i])
+            step_end = step_start + float(dt[i])
+            overlap = max(0.0, min(step_end, end) - max(step_start, start))
+
+            if overlap > 0.0:
+                contrib_mass = A * (overlap / L)  # g/m2 mass
+                rate_add = contrib_mass / float(dt[i])  # g/m2/yr
+                rates[i] += rate_add
+
+        # ---- compute cumulative mass correctly (only for dryrun)
+        if dryrun:
+            total1 = 0.0
+            for i in range(n):
+                total1 += rates[i] * dt[i]
+                cumrates[i] = total1
+
+    # Build header and only include columns for requested feedstocks
+    headers: List[str] = ["time(yr)\tdust(g/m2/yr)"]
+    col_arrays: List[np.ndarray] = [times]
+    col_arrays.append(rates)
+
+    if dryrun:
+        outdict["rate_gm2yr"] = rates
+        outdict["cumrate_gm2yr"] = cumrates
+        # return result
+        return pd.DataFrame(outdict)
+    else:
+        # Write file
+        outpath = os.path.join(outdir, output_filename)
+        if outpath.startswith("s3://"):
+            fmt = "{:.8e}"
+            nrows = len(times)
+            # S3 path
+            with fsspec.open(outpath, "w") as fout:
+                fout.write("# " + "\t".join(headers) + "\n")
+                for i in range(nrows):
+                    row_vals = [fmt.format(float(arr[i])) for arr in col_arrays]
+                    fout.write("\t".join(row_vals) + "\n")
+        else:
+            with open(outpath, "w") as fout:
+                fout.write("# " + "\t".join(headers) + "\n")
+                # write formatted rows; use high precision
+                fmt = "{:.8e}"
+                nrows = times.size
+                for i in range(nrows):
+                    row_vals = []
+                    for arr in col_arrays:
+                        # arr may contain float values
+                        row_vals.append(fmt.format(float(arr[i])))
+                    fout.write("\t".join(row_vals) + "\n")
+            
+        return outpath
+    
 
 def create_dust_input_multiSp(
     outdir: str,

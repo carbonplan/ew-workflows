@@ -84,6 +84,7 @@ def create_climvars_ds(
     runoff_vars: list,
     roundtime_to: int=5,
     era5_unit_conversions_on: bool=True,
+    budyko_runoff: bool=False,
 )-> xr.Dataset:
     '''
     Select point for each site, extract just the necessary variables, and 
@@ -126,6 +127,9 @@ def create_climvars_ds(
     dsx = xr.concat(dslist, dim='site')
 
     # --- pull out just the variables we want 
+    if budyko_runoff:
+        runoff_vars.append("total_precipitation")
+        runoff_vars.append("potential_evaporation")
     allvars = [soilwater_layers, soiltemperature_layers, runoff_vars]
     allvars_list = sum(allvars, [])
     dsvar = dsx[allvars_list].copy()
@@ -141,9 +145,13 @@ def create_climvars_ds(
             soilwater_layers,
             soiltemperature_layers,
             runoff_vars,
+            budyko_runoff
         )
 
     # --- create average vars across lists
+    if budyko_runoff:
+        runoff_vars.remove("total_precipitation")
+        runoff_vars.remove("potential_evaporation")
     dsvar['soilwater_mm_meter'] = dsvar[soilwater_layers].to_array(dim='var').mean(dim='var')
     dsvar['runoff_mm_month'] = dsvar[runoff_vars].to_array(dim='var').mean(dim='var')
     dsvar['temperature_c'] = dsvar[soiltemperature_layers].to_array(dim='var').mean(dim='var')
@@ -151,12 +159,27 @@ def create_climvars_ds(
     # --- return result
     return dsvar, nyears_data
 
+def budyko_runoff_xr(P, PET, omega):
+    """
+    xarray-compatible Budyko runoff calculation.
+    """
+    # use time-mean water balance
+    phi = P.mean('time') / PET.mean('time')
+
+    # ET_over_P = 1 + phi - (1 + phi**omega)**(1 / omega)
+    ET_over_P = 1/(1 + phi**omega)**(1/omega)  # https://hess.copernicus.org/articles/27/1929/2023/#&gid=1&pid=1
+
+    ET = ET_over_P * P
+    Q = P - ET
+
+    return Q, phi
 
 def era5_unit_conversions(
     dsvar: xr.Dataset,
     soilwater_layers: list,
     soiltemperature_layers: list,
     runoff_vars: list,
+    budyko_runoff,
 )-> xr.Dataset:
     '''
     Convert era5 variable units to SCEPTER units. Soil water 
@@ -207,9 +230,19 @@ def era5_unit_conversions(
     # convert to data array
     dt_months_da = xr.DataArray(dt_months, coords={'time': dsvar.time}, dims='time')
 
-    # scale runoff to month-1
-    for var in runoff_vars: # must loop because we're scaling with a data array
-        dsvar[var] = dsvar[var] / dt_months_da
+    # convert accumulated runoff from meters → millimeters
+    ts_per_month = 1/dt_months
+    for var in runoff_vars:
+        dsvar[var] = dsvar[var] * 1000 * ts_per_month
+
+    # calculate runoff with budyko (era5 hourly runoff is SUPER low!!)
+    if budyko_runoff:
+        P = dsvar['total_precipitation']
+        PET = dsvar['potential_evaporation'] * -1 # (pet is a vector)
+        omega = 1.8
+        q, p_pet = budyko_runoff_xr(P, PET, omega)
+        dsvar['runoff'] = q
+        dsvar['p_over_pet_mean_budyko'] = p_pet
 
     # --- return result
     return dsvar 
