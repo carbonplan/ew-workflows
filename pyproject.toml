@@ -3,7 +3,7 @@ name = "ew-workflows"
 readme = "README.md"
 version = "0.1.0"
 
-requires-python = "==3.13.5"
+requires-python = ">=3.12"
 dependencies = [
     "bokeh>=3.8.2",
     "cartopy>=0.25.0",
