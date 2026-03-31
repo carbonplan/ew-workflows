@@ -66,6 +66,8 @@ molar_mass_dict = {
     'g2': 30,
     'g3': 30,
     'amnt': 80.043,  # Kanzaki et al., 2023, table 3
+    'ep': 483.22675, # scepter_richards.f90 `mwtep` variable, which is the molar mass of epidote calculated based on the composition defined as: Ca2FeAl2Si3O12OH
+    'clch': 555.79754, # scepter_richards.f90 `mwtclch` variable, which is the molar mass of clinochlore calculated based on the composition defined as: Mg5Al2Si3O10(OH)8
     # --- see treatment of gbas below (not in table 1 of Kanzaki et al., 2022)
     'gbas': 120.496,
     # Note: gbas molar mass depends on whether Dmod_bas_cmp is defined in the makefile! 
