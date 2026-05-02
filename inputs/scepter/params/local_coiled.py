@@ -4,8 +4,28 @@
 # 
 # ---------------------------------
 
+spinup = {
+    "control-script": 'singlerun_spinup.py', # (I think this is ignored in current version and the worker becomes the control script?)
+    "run-script": 'tunespin_4_newton_inert_buff_v2_defaultdict.py',
+    "control-script-dir": '/home/tykukla/ew-workflows/scripts/scepter/run/control_scripts/',
+    "batch-input-dir": 's3://carbonplan-carbon-removal/ew-workflows-data/scepter/batch/',
+    "default-dict": 'spinup_default',  # see SCEPTER/defaults/dict_singlerun.py
+    "model-dir": '/home/jovyan/SCEPTER/',
+    "save-dir": 's3://carbonplan-carbon-removal/ew-workflows-data/TMP-TEST/',
+    "container": 'quay.io/carbonplan/ew-workflows:latest',
+    "multiyear": False,     # whether we're in multi-year mode (affects path building)
+
+    # [ coiled-specific ; optional (the driver has defaults) ]
+    "container-home": "/home/jovyan/",
+    "vm_type": "m6i.large",      # make sure it's compatible with the container and arm selection  # (https://instances.vantage.sh)
+    "arm": False,
+    "region": "us-west-2",
+    "spot_policy": "on-demand",    # "spot_with_fallback" [ can be deleted, but much cheaper ]
+    "tag": {"Project": "scepter"},
+}
+
 singlerun = {
-    "control-script": 'singlerun.py',
+    "control-script": 'singlerun.py',   # (I think this is ignored in current version and the worker becomes the control script?)
     "run-script": 'rock_app_singleRun-szn.py',
     "control-script-dir": '/home/tykukla/ew-workflows/scripts/scepter/run/control_scripts/',
     "batch-input-dir": 's3://carbonplan-carbon-removal/ew-workflows-data/scepter/batch/',
@@ -25,7 +45,7 @@ singlerun = {
 }
 
 multiyear = {
-    "run-script": 'rock_buff_dust-ts_multiyear.py',
+    "run-script": 'rock_buff_dust-ts_multiyear.py',    # (I think this is ignored in current version and the worker becomes the control script?)
     "batch-input-dir": 's3://carbonplan-carbon-removal/ew-workflows-data/scepter/batch/',
     "default-dict": 'specifydust_default',  # see SCEPTER/defaults/dict_singlerun.py
     "model-dir": '/home/jovyan/SCEPTER/',
@@ -43,7 +63,7 @@ multiyear = {
 }
 
 ph_react = {
-    "run-script": 'rock_buff_minPH_multiyear.py',
+    "run-script": 'rock_buff_minPH_multiyear.py',   # (I think this is ignored in current version and the worker becomes the control script?)
     "batch-input-dir": 's3://carbonplan-carbon-removal/ew-workflows-data/scepter/batch/',
     "default-dict": 'ph_react_default',  # see SCEPTER/defaults/dict_singlerun.py
     "model-dir": '/home/jovyan/SCEPTER/',

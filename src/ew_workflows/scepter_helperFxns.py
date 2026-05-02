@@ -2271,7 +2271,7 @@ def to_aws(
                 # --- TROUBLESHOOT ----
                 # print(f"Trying to move {src} to {dst_aws}")
                 # ---------------------
-                cmd_run = "s5cmd mv " + src + " " + dst_aws + "/"
+                cmd_run = "s5cmd mv " + src + " " + dst_aws.rstrip("/") + "/"
                 # result1 = subprocess.run(cmd_activate, shell=True, check=True)
                 result2 = subprocess.run(cmd_run, shell=True, check=True)
                 outdir_final = dst_aws
