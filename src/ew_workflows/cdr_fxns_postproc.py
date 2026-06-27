@@ -3561,6 +3561,9 @@ def gcam_postprocess_all_dims_constApp(
         f'{cdr_var}_globe': ds_combined[f'{cdr_var}_region'].sum(dim=site_dim).assign_attrs(
             units='t/yr', description=f'Global modeled CDR ({cdr_var}), sum across active regions'
         ),
+        'M_D_region': ds_combined['M_D'].sum(dim='deployment').assign_attrs(
+            units='t/yr', description='Total rock spread per region per year (sum of M_D across deployments)'
+        ),
     })
 
     return ds_combined
