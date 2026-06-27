@@ -5,6 +5,7 @@
 # %%
 from scipy.integrate import cumulative_trapezoid
 from typing import Tuple
+from typing import Callable
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -3153,17 +3154,19 @@ def find_control_runs(
 # 
 
 def gcam_postprocess_region_constApp(
-    ds_rep,
-    df_rock,
-    dsag,
-    region_idx,
-    varlist_deploy,
-    varlist_region,
-    varlist_region_cumfrac,
-    cdr_var='cdr_adv',
-    t_start=0.2,
-    basalt_cdrpot=0.3,
-):
+    ds_rep:                  xr.Dataset,
+    df_rock:                 pd.DataFrame,
+    dsag:                    xr.Dataset,
+    region_idx:              int,
+    varlist_deploy:          list[str],
+    varlist_region:          list[str],
+    varlist_region_cumfrac:  list[str],
+    varlist_rco2_correction: list[str],
+    rco2_correction_factor:  float,
+    cdr_var:                 str   = 'cdr_adv',
+    t_start:                 float = 0.2,
+    basalt_cdrpot:           float = 0.3,
+) -> xr.Dataset:
     """
     Scale a representative SCEPTER run to regional CDR totals.
 
@@ -3183,6 +3186,12 @@ def gcam_postprocess_region_constApp(
         Subset of varlist_deploy to aggregate as area-scaled regional totals.
     varlist_region_cumfrac : list of str
         Subset of varlist_deploy to aggregate as cumulative-rock-weighted regional means.
+    varlist_rco2_correction : list of str
+        Variables to scale by rco2_correction_factor before deployment mapping and regional
+        aggregation, to account for GCAM's lower CDR potential per tonne of rock vs. SCEPTER.
+    rco2_correction_factor : float
+        Multiplicative correction applied to variables in varlist_rco2_correction.
+        Defined as RCO2_gcam / RCO2_scepter.
     cdr_var : str
         Primary CDR variable (default 'cdr_adv'); always written as {cdr_var}_region.
     t_start : float
@@ -3217,6 +3226,13 @@ def gcam_postprocess_region_constApp(
         for vname in varlist_deploy
     }
 
+    # Apply RCO2 correction before building deployment lag matrices
+    for vname in varlist_rco2_correction:
+        if vname in extra_vals:
+            extra_vals[vname] = extra_vals[vname] * rco2_correction_factor
+    if cdr_var in varlist_rco2_correction:
+        cdr_vals = cdr_vals * rco2_correction_factor
+
     # ── Step 2: Build lower-triangular lag matrices ────────────────────────────────────────────
     # mat[j, i] = vals[j - i]  for j >= i, else NaN
     deploy_coords = np.arange(n_time)
@@ -3248,22 +3264,36 @@ def gcam_postprocess_region_constApp(
     coords_td = {'time': time_vals, 'deployment': deploy_coords}
     coords_t  = {'time': time_vals}
 
+    _rco2_note = ' (scaled by rco2_correction_factor = RCO2_gcam / RCO2_scepter)'
+
     ds_out = xr.Dataset(
         {
             f'{cdr_var}_deployment': xr.DataArray(
                 CDR_flux_2d, coords=coords_td, dims=['time', 'deployment'],
-                attrs={'units': 't/ha/yr', 'description': 'CDR flux per unit area for each deployment'},
+                attrs={
+                    'units': 't/ha/yr',
+                    'description': ('CDR flux per unit area for each deployment'
+                                    + (_rco2_note if cdr_var in varlist_rco2_correction else '')),
+                },
             ),
             'rockflx_t_ha_yr': xr.DataArray(
                 R_flux_2d, coords=coords_td, dims=['time', 'deployment'],
                 attrs={'units': 't/ha/yr', 'description': 'Rock application rate per deployment'},
+            ),
+            'rco2_correction_factor': xr.DataArray(
+                rco2_correction_factor,
+                attrs={
+                    'units': '-',
+                    'description': 'RCO2 correction factor applied to varlist_rco2_correction variables (= RCO2_gcam / RCO2_scepter)',
+                },
             ),
             **{
                 f'{vname}_deployment': xr.DataArray(
                     extra_flux_2d[vname], coords=coords_td, dims=['time', 'deployment'],
                     attrs={
                         'units': str(ds_rep[vname].attrs.get('units', '')),
-                        'description': f'{vname} per unit area for each deployment',
+                        'description': (f'{vname} per unit area for each deployment'
+                                        + (_rco2_note if vname in varlist_rco2_correction else '')),
                     },
                 )
                 for vname in varlist_deploy
@@ -3338,7 +3368,7 @@ def gcam_postprocess_region_constApp(
         ),
         'M_GCAM': xr.DataArray(
             m_gcam_vals, coords=coords_t, dims=['time'],
-            attrs={'units': 't/yr', 'description': f'Annual rock mass target from GCAM ({region_name})'},
+            attrs={'units': 't/yr', 'description': 'Annual rock mass target from GCAM'},
         ),
         'mu': xr.DataArray(
             mu_arr, coords=coords_t, dims=['time'],
@@ -3367,13 +3397,21 @@ def gcam_postprocess_region_constApp(
         f'{cdr_var}_region': xr.DataArray(
             np.nansum(CDR_flux_2d * A_D_2d, axis=1),
             coords=coords_t, dims=['time'],
-            attrs={'units': 't/yr', 'description': 'Total CDR for the region'},
+            attrs={
+                'units': 't/yr',
+                'description': ('Total CDR for the region'
+                                + (_rco2_note if cdr_var in varlist_rco2_correction else '')),
+            },
         ),
         **{
             f'{vname}_region': xr.DataArray(
                 np.nansum(extra_flux_2d[vname] * A_D_2d, axis=1),
                 coords=coords_t, dims=['time'],
-                attrs={'units': 't/yr', 'description': f'Area-scaled regional total for {vname}'},
+                attrs={
+                    'units': 't/yr',
+                    'description': (f'Area-scaled regional total for {vname}'
+                                    + (_rco2_note if vname in varlist_rco2_correction else '')),
+                },
             )
             for vname in vlist_region_others
         },
@@ -3398,20 +3436,22 @@ def gcam_postprocess_region_constApp(
 
 
 def gcam_postprocess_all_dims_constApp(
-    ds_trans,
-    dfrock_dict,
-    dsag_dict,
-    varlist_deploy,
-    varlist_region,
-    varlist_region_cumfrac,
-    cdr_var='cdr_adv',
-    t_start=0.2,
-    basalt_cdrpot=0.3,
-    apprate_key_fn=lambda v: f'{float(v)}-tHaYr-appRate',
-    site_dim='site',
-    region_col='region_nospaces',
-    verbose=True,
-):
+    ds_trans:                xr.Dataset,
+    dfrock_dict:             dict[str, pd.DataFrame],
+    dsag_dict:               dict[str, xr.Dataset],
+    varlist_deploy:          list[str],
+    varlist_region:          list[str],
+    varlist_region_cumfrac:  list[str],
+    varlist_rco2_correction: list[str],
+    rco2_correction_factor:  float,
+    cdr_var:                 str                    = 'cdr_adv',
+    t_start:                 float                  = 0.2,
+    basalt_cdrpot:           float                  = 0.3,
+    apprate_key_fn:          Callable[[float], str] = lambda v: f'{float(v)}-tHaYr-appRate',
+    site_dim:                str                    = 'site',
+    region_col:              str                    = 'region_nospaces',
+    verbose:                 bool                   = True,
+) -> xr.Dataset:
     """
     Run postprocess_region for every combination of non-time dims in ds_trans,
     then assemble into a single multi-dimensional Dataset.
@@ -3429,9 +3469,16 @@ def gcam_postprocess_all_dims_constApp(
         Cropland datasets keyed by apprate name string.
     varlist_deploy, varlist_region, varlist_region_cumfrac : list of str
         Passed through to postprocess_region.
+    varlist_rco2_correction : list of str
+        Variables to scale by rco2_correction_factor before deployment mapping and regional
+        aggregation, to account for GCAM's lower CDR potential per tonne of rock vs. SCEPTER.
+        Passed through to postprocess_region.
+    rco2_correction_factor : float
+        Multiplicative correction applied to variables in varlist_rco2_correction.
+        Defined as RCO2_gcam / RCO2_scepter. Passed through to postprocess_region.
     cdr_var, t_start, basalt_cdrpot :
         Passed through to postprocess_region.
-    apprate_key_fn : callable
+    apprate_key_fn : Callable[[float], str]
         Maps an apprate coordinate value to a dfrock_dict / dsag_dict key.
         Default: lambda v: f'{float(v)}-tHaYr-appRate'.
         If 'apprate_base' is not a dim in ds_trans, the only key in dfrock_dict is used.
@@ -3490,6 +3537,8 @@ def gcam_postprocess_all_dims_constApp(
             varlist_deploy         = varlist_deploy,
             varlist_region         = varlist_region,
             varlist_region_cumfrac = varlist_region_cumfrac,
+            varlist_rco2_correction = varlist_rco2_correction,
+            rco2_correction_factor  = rco2_correction_factor,
             cdr_var                = cdr_var,
             t_start                = t_start,
             basalt_cdrpot          = basalt_cdrpot,
@@ -3503,7 +3552,7 @@ def gcam_postprocess_all_dims_constApp(
 
         results.append(ds_out)
 
-    ds_combined = xr.combine_by_coords(results, combine_attrs='drop')
+    ds_combined = xr.combine_by_coords(results, combine_attrs='override')
 
     ds_combined = ds_combined.assign({
         'gcam_cdr_globe': ds_combined['gcam_cdr'].sum(dim=site_dim).assign_attrs(
