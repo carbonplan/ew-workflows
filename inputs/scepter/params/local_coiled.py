@@ -14,6 +14,9 @@ spinup = {
     "save-dir": 's3://carbonplan-carbon-removal/ew-workflows-data/TMP-TEST/',
     "container": 'quay.io/carbonplan/ew-workflows:latest',
     "multiyear": False,     # whether we're in multi-year mode (affects path building)
+    "run-id-col": "spinname",           # column used as base run ID (spinup CSVs have no newrun_id)
+    "run-id-suffix": "_spintuneup4_field",  # suffix the tunespin script appends to the output dir name
+    "skip_duration_check": True,        # spinup runs have no fixed duration to validate against
 
     # [ coiled-specific ; optional (the driver has defaults) ]
     "container-home": "/home/jovyan/",

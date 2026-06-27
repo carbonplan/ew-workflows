@@ -630,8 +630,10 @@ def find_failed_or_stale_runs(
         check_results_fn: str  = "check_results.res",
         check_logs_fn: str  = "check_logs.res",
         duration_threshold_frac: float = 0.2,
-        skip_duration_check: bool=False
-)->pd.DataFrame: 
+        skip_duration_check: bool=False,
+        run_id_col: str = None,
+        run_id_suffix: str = "",
+)->pd.DataFrame:
     """
     Identify failed or incomplete runs from a batch CSV.
 
@@ -641,9 +643,22 @@ def find_failed_or_stale_runs(
         DataFrame containing the batch CSV rows.
     multiyear : bool
         Whether the runs are in multiyear mode (affects path building).
+    run_id_col : str, optional
+        Column to use directly as the base run ID (e.g. 'spinname' for spinup
+        CSVs that lack 'newrun_id', 'dustsp', and 'duration' columns).  When
+        provided, the newrun_id/dustsp/duration suffix logic is skipped and
+        both newrun_id_field_full and newrun_id_lab_full are derived from this
+        column plus run_id_suffix.
+    run_id_suffix : str, optional
+        Suffix appended to run_id_col values when building newrun_id_field_full
+        (e.g. '_spintuneup4_field' for spinup runs).  Only used when
+        run_id_col is set.
     """
     # --- add column for full run ID
-    if multiyear:
+    if run_id_col is not None:
+        df_batch["newrun_id_field_full"] = df_batch[run_id_col] + run_id_suffix
+        df_batch["newrun_id_lab_full"] = df_batch[run_id_col] + run_id_suffix
+    elif multiyear:
         df_batch["newrun_id_field_full"] = df_batch['newrun_id'] + f"_composite_field"
         df_batch["newrun_id_lab_full"] = df_batch['newrun_id'] + f"_composite_lab"
     else:

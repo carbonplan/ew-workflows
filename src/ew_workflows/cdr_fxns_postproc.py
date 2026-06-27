@@ -3145,3 +3145,373 @@ def find_control_runs(
     dfin["ctrl_run"] = mask
     # return result
     return dfin
+
+
+
+# ----------------------------------------------------------------------------------
+# [ ADD FUNCTIONS FOR GCAM POSTPROCESSING ]
+# 
+
+def gcam_postprocess_region_constApp(
+    ds_rep,
+    df_rock,
+    dsag,
+    region_idx,
+    varlist_deploy,
+    varlist_region,
+    varlist_region_cumfrac,
+    cdr_var='cdr_adv',
+    t_start=0.2,
+    basalt_cdrpot=0.3,
+):
+    """
+    Scale a representative SCEPTER run to regional CDR totals.
+
+    Parameters
+    ----------
+    ds_rep : xr.Dataset
+        Representative run, already isel'd to one (site, apprate_base, dustrad, cec_factor).
+    df_rock : pd.DataFrame
+        Rock flux dataframe for this apprate (all regions); filtered internally by region_idx.
+    dsag : xr.Dataset
+        Cropland dataset for this apprate (all regions); filtered internally by region_idx.
+    region_idx : int
+        GCAM reg_id used to filter df_rock and dsag. Must match the 'reg_id' column in df_rock.
+    varlist_deploy : list of str
+        Variables to build as (time, deployment) lag matrices.
+    varlist_region : list of str
+        Subset of varlist_deploy to aggregate as area-scaled regional totals.
+    varlist_region_cumfrac : list of str
+        Subset of varlist_deploy to aggregate as cumulative-rock-weighted regional means.
+    cdr_var : str
+        Primary CDR variable (default 'cdr_adv'); always written as {cdr_var}_region.
+    t_start : float
+        Time (yr) after which to begin interpolation, skipping the initial numerical blip.
+    basalt_cdrpot : float
+        g CO2 per g basalt, for converting GCAM CDR to rock mass (default 0.3).
+
+    Returns
+    -------
+    xr.Dataset
+        All deployment-level and region-level variables on a common annual time grid.
+
+    Raises
+    ------
+    ValueError
+        If region_idx is not present in df_rock.
+    """
+
+    # ── Step 1: Setup — time grid and base parameters ─────────────────────────────────────────
+    time_raw    = ds_rep.time.values
+    cdr_raw     = ds_rep[cdr_var].values.copy()
+    R0          = float(ds_rep.apprate_base.values)
+    region_name = str(ds_rep.site.values)
+
+    n_years   = int(time_raw[-1] - t_start)
+    time_vals = np.arange(n_years + 1, dtype=float)
+    cdr_vals  = np.interp(time_vals + t_start, time_raw, cdr_raw)
+    n_time    = len(time_vals)
+
+    extra_vals = {
+        vname: np.interp(time_vals + t_start, time_raw, ds_rep[vname].values.copy())
+        for vname in varlist_deploy
+    }
+
+    # ── Step 2: Build lower-triangular lag matrices ────────────────────────────────────────────
+    # mat[j, i] = vals[j - i]  for j >= i, else NaN
+    deploy_coords = np.arange(n_time)
+
+    def _lag_matrix(vals):
+        mat = np.full((n_time, n_time), np.nan)
+        for i in range(n_time):
+            mat[i:, i] = vals[:n_time - i]
+        return mat
+
+    CDR_flux_2d   = _lag_matrix(cdr_vals)
+    extra_flux_2d = {vname: _lag_matrix(v) for vname, v in extra_vals.items()}
+
+    # ── Step 3: R_flux lag matrix + initial ds_out ────────────────────────────────────────────
+    df_region = (df_rock[df_rock['reg_id'] == region_idx]
+                 .sort_values('time').reset_index(drop=True))
+
+    if df_region.empty:
+        raise ValueError(f"reg_id={region_idx} ({region_name}) not found in df_rock")
+
+    gcam_t0    = int(df_region['time'].min())
+    gcam_years = df_region['time'].values.astype(float)
+
+    r_gcam = df_region['effective_rate_t_ha'].values
+    r_vals = np.interp(time_vals, gcam_years - gcam_t0, r_gcam,
+                       left=r_gcam[0], right=r_gcam[-1])
+    R_flux_2d = _lag_matrix(r_vals)
+
+    coords_td = {'time': time_vals, 'deployment': deploy_coords}
+    coords_t  = {'time': time_vals}
+
+    ds_out = xr.Dataset(
+        {
+            f'{cdr_var}_deployment': xr.DataArray(
+                CDR_flux_2d, coords=coords_td, dims=['time', 'deployment'],
+                attrs={'units': 't/ha/yr', 'description': 'CDR flux per unit area for each deployment'},
+            ),
+            'rockflx_t_ha_yr': xr.DataArray(
+                R_flux_2d, coords=coords_td, dims=['time', 'deployment'],
+                attrs={'units': 't/ha/yr', 'description': 'Rock application rate per deployment'},
+            ),
+            **{
+                f'{vname}_deployment': xr.DataArray(
+                    extra_flux_2d[vname], coords=coords_td, dims=['time', 'deployment'],
+                    attrs={
+                        'units': str(ds_rep[vname].attrs.get('units', '')),
+                        'description': f'{vname} per unit area for each deployment',
+                    },
+                )
+                for vname in varlist_deploy
+            },
+        }
+    )
+    ds_out.attrs['region'] = region_name
+
+    # ── Step 4: M_GCAM ────────────────────────────────────────────────────────────────────────
+    gcam_rock_t = df_region['gcam_gross_cdr_mtCO2'].values / basalt_cdrpot * 1e6
+    m_gcam_vals = np.interp(time_vals, gcam_years - gcam_t0, gcam_rock_t,
+                            left=0.0, right=gcam_rock_t[-1])
+
+    # ── Step 5: Iterative area calculation ────────────────────────────────────────────────
+    A_D_2d    = np.full((n_time, n_time), np.nan)
+    M_D_2d    = np.full((n_time, n_time), np.nan)
+    mu_arr    = np.zeros(n_time)
+    M_new_arr = np.zeros(n_time)
+
+    for j in range(n_time):
+        if j > 0:
+            A_D_2d[j, :] = A_D_2d[j - 1, :]
+
+        M_D_2d[j, :j]  = R_flux_2d[j, :j] * A_D_2d[j, :j]
+        mu_arr[j]       = np.nansum(M_D_2d[j, :j])
+        M_new_arr[j]    = m_gcam_vals[j] - mu_arr[j]
+
+        if M_new_arr[j] >= 0:
+            A_D_2d[j, j] = M_new_arr[j] / r_vals[0]
+            M_D_2d[j, j] = M_new_arr[j]
+        else:
+            excess = -M_new_arr[j]
+            for i_trim in range(j - 1, -1, -1):
+                if not (A_D_2d[j, i_trim] > 0):
+                    continue
+                removable = M_D_2d[j, i_trim]
+                if removable <= excess:
+                    A_D_2d[j, i_trim] = 0.0
+                    M_D_2d[j, i_trim] = 0.0
+                    excess -= removable
+                else:
+                    A_D_2d[j, i_trim] -= excess / R_flux_2d[j, i_trim]
+                    M_D_2d[j, i_trim] -= excess
+                    excess = 0.0
+                if excess <= 0:
+                    break
+
+    # ── Steps 6 + 7: Assemble ds_out ───────────────────────────────────────────────────────────
+    mask              = dsag['reg_id'].values == region_idx
+    total_cropland_ha = float(dsag['cropland_area_by_region'].values[mask][0]) / 1e4
+
+    gcam_cdr_t    = df_region['gcam_gross_cdr_mtCO2'].values * 1e6
+    gcam_cdr_vals = np.interp(time_vals, gcam_years - gcam_t0, gcam_cdr_t,
+                               left=0.0, right=gcam_cdr_t[-1])
+
+    cumM_D_2d    = np.nancumsum(M_D_2d, axis=0)
+    cumM_D_total = np.nansum(cumM_D_2d, axis=1)
+
+    A_total_ERW_vals = np.nansum(A_D_2d, axis=1)
+
+    # cdr_var is always computed explicitly; skip it in the varlist_region loop to avoid collision
+    vlist_region_others = [v for v in varlist_region if v != cdr_var]
+
+    ds_out = ds_out.assign({
+        'A_D': xr.DataArray(
+            A_D_2d, coords=coords_td, dims=['time', 'deployment'],
+            attrs={'units': 'ha', 'description': 'Deployment area (NaN = not yet open)'},
+        ),
+        'M_D': xr.DataArray(
+            M_D_2d, coords=coords_td, dims=['time', 'deployment'],
+            attrs={'units': 't/yr', 'description': 'Rock mass per deployment (NaN = not yet open)'},
+        ),
+        'M_GCAM': xr.DataArray(
+            m_gcam_vals, coords=coords_t, dims=['time'],
+            attrs={'units': 't/yr', 'description': f'Annual rock mass target from GCAM ({region_name})'},
+        ),
+        'mu': xr.DataArray(
+            mu_arr, coords=coords_t, dims=['time'],
+            attrs={'units': 't/yr', 'description': 'Rock from existing deployments'},
+        ),
+        'M_new': xr.DataArray(
+            M_new_arr, coords=coords_t, dims=['time'],
+            attrs={'units': 't/yr', 'description': 'Rock allocated to new deployment'},
+        ),
+        'A_total_ERW': xr.DataArray(
+            A_total_ERW_vals, coords=coords_t, dims=['time'],
+            attrs={'units': 'ha', 'description': 'Total ERW area'},
+        ),
+        'cropland_ha_total': xr.DataArray(
+            total_cropland_ha,
+            attrs={'units': 'ha', 'description': 'Total cropland area in the region (time-invariant)'},
+        ),
+        'cropfrac_ERW': xr.DataArray(
+            A_total_ERW_vals / total_cropland_ha, coords=coords_t, dims=['time'],
+            attrs={'units': '-', 'description': 'Fraction of regional cropland under ERW'},
+        ),
+        'gcam_cdr': xr.DataArray(
+            gcam_cdr_vals, coords=coords_t, dims=['time'],
+            attrs={'units': 'tCO2/yr', 'description': 'GCAM-derived regional CDR'},
+        ),
+        f'{cdr_var}_region': xr.DataArray(
+            np.nansum(CDR_flux_2d * A_D_2d, axis=1),
+            coords=coords_t, dims=['time'],
+            attrs={'units': 't/yr', 'description': 'Total CDR for the region'},
+        ),
+        **{
+            f'{vname}_region': xr.DataArray(
+                np.nansum(extra_flux_2d[vname] * A_D_2d, axis=1),
+                coords=coords_t, dims=['time'],
+                attrs={'units': 't/yr', 'description': f'Area-scaled regional total for {vname}'},
+            )
+            for vname in vlist_region_others
+        },
+        **{
+            f'{vname}_region': xr.DataArray(
+                np.where(
+                    cumM_D_total > 0,
+                    np.nansum(np.where(np.isfinite(extra_flux_2d[vname]), extra_flux_2d[vname], np.nan) * cumM_D_2d, axis=1) / np.where(cumM_D_total > 0, cumM_D_total, 1),
+                    np.nan,
+                ),
+                coords=coords_t, dims=['time'],
+                attrs={
+                    'units': str(ds_rep[vname].attrs.get('units', '')),
+                    'description': f'Cumulative-rock-weighted regional mean for {vname}',
+                },
+            )
+            for vname in varlist_region_cumfrac
+        },
+    })
+
+    return ds_out
+
+
+def gcam_postprocess_all_dims_constApp(
+    ds_trans,
+    dfrock_dict,
+    dsag_dict,
+    varlist_deploy,
+    varlist_region,
+    varlist_region_cumfrac,
+    cdr_var='cdr_adv',
+    t_start=0.2,
+    basalt_cdrpot=0.3,
+    apprate_key_fn=lambda v: f'{float(v)}-tHaYr-appRate',
+    site_dim='site',
+    region_col='region_nospaces',
+    verbose=True,
+):
+    """
+    Run postprocess_region for every combination of non-time dims in ds_trans,
+    then assemble into a single multi-dimensional Dataset.
+
+    Parameters
+    ----------
+    ds_trans : xr.Dataset
+        Full transient dataset. Must have a 'time' dim and a site dim (see site_dim).
+        All other dims are discovered automatically and iterated over.
+        The positional index of each site in ds_trans must equal its GCAM reg_id.
+    dfrock_dict : dict[str, pd.DataFrame]
+        Rock flux dataframes keyed by apprate name string.
+        Each dataframe must have 'region' (name string) and 'reg_id' (int) columns.
+    dsag_dict : dict[str, xr.Dataset]
+        Cropland datasets keyed by apprate name string.
+    varlist_deploy, varlist_region, varlist_region_cumfrac : list of str
+        Passed through to postprocess_region.
+    cdr_var, t_start, basalt_cdrpot :
+        Passed through to postprocess_region.
+    apprate_key_fn : callable
+        Maps an apprate coordinate value to a dfrock_dict / dsag_dict key.
+        Default: lambda v: f'{float(v)}-tHaYr-appRate'.
+        If 'apprate_base' is not a dim in ds_trans, the only key in dfrock_dict is used.
+    site_dim : str
+        Name of the site/region dimension in ds_trans (default 'site').
+    region_col : str
+        Column in df_rock that matches ds_trans site coordinate values (default 'region_nospaces').
+    verbose : bool
+        Print a progress line for each combination (default True).
+
+    Returns
+    -------
+    xr.Dataset
+        Combined dataset with dims (time, deployment, <all loop dims>).
+        Only includes sites present in df_rock; inactive regions are skipped.
+    """
+    import itertools
+
+    loop_dims  = [d for d in ds_trans.dims if d != 'time']
+    dim_ranges = [range(ds_trans.sizes[d]) for d in loop_dims]
+    n_total    = 1
+    for r in dim_ranges:
+        n_total *= len(r)
+
+    results = []
+    for k, indices in enumerate(itertools.product(*dim_ranges)):
+        isel_dict   = dict(zip(loop_dims, indices))
+        ds_rep      = ds_trans.isel(**isel_dict)
+        region_name = str(ds_rep[site_dim].values)
+
+        if 'apprate_base' in loop_dims:
+            apprate_key = apprate_key_fn(float(ds_rep['apprate_base'].values))
+        else:
+            apprate_key = next(iter(dfrock_dict))
+
+        # Look up reg_id by matching region name — positional index in ds_trans
+        # is not the same as reg_id; df_rock's 'region' column is the source of truth.
+        df_this     = dfrock_dict[apprate_key]
+        region_rows = df_this[df_this[region_col] == region_name]
+        if region_rows.empty:
+            if verbose:
+                coord_str = ', '.join(f'{d}={ds_rep[d].values}' for d in loop_dims)
+                print(f'[{k+1}/{n_total}]  {coord_str}  -> skipped (not in df_rock)')
+            continue
+        region_idx = int(region_rows['reg_id'].iloc[0])
+
+        if verbose:
+            coord_str = ', '.join(f'{d}={ds_rep[d].values}' for d in loop_dims)
+            print(f'[{k+1}/{n_total}]  {coord_str}')
+
+        ds_out = gcam_postprocess_region_constApp(
+            ds_rep                 = ds_rep,
+            df_rock                = dfrock_dict[apprate_key],
+            dsag                   = dsag_dict[apprate_key],
+            region_idx             = region_idx,
+            varlist_deploy         = varlist_deploy,
+            varlist_region         = varlist_region,
+            varlist_region_cumfrac = varlist_region_cumfrac,
+            cdr_var                = cdr_var,
+            t_start                = t_start,
+            basalt_cdrpot          = basalt_cdrpot,
+        )
+
+        # Attach the scalar iteration coordinates from ds_rep so combine_by_coords
+        # can orient each result correctly, then promote them to proper dimensions.
+        for dim in loop_dims:
+            ds_out = ds_out.assign_coords({dim: ds_rep[dim].values})
+        ds_out = ds_out.expand_dims(loop_dims)
+
+        results.append(ds_out)
+
+    ds_combined = xr.combine_by_coords(results, combine_attrs='drop')
+
+    ds_combined = ds_combined.assign({
+        'gcam_cdr_globe': ds_combined['gcam_cdr'].sum(dim=site_dim).assign_attrs(
+            units='tCO2/yr', description='Global GCAM CDR (sum across active regions)'
+        ),
+        f'{cdr_var}_globe': ds_combined[f'{cdr_var}_region'].sum(dim=site_dim).assign_attrs(
+            units='t/yr', description=f'Global modeled CDR ({cdr_var}), sum across active regions'
+        ),
+    })
+
+    return ds_combined
