@@ -3354,6 +3354,12 @@ def gcam_postprocess_region_constApp(
 
     A_total_ERW_vals = np.nansum(A_D_2d, axis=1)
 
+    # precompute area-weighted solid-phase dissolution arrays
+    # (total_dissolution and int_dust_ton_ha_yr are cumulative quantities in the SCEPTER
+    # output, so the area-weighted sum gives total dissolved / applied mass in the region)
+    _total_diss_region = np.nansum(extra_flux_2d['total_dissolution'] * A_D_2d, axis=1)
+    _int_dust_region   = np.nansum(extra_flux_2d['int_dust_ton_ha_yr'] * A_D_2d, axis=1)
+
     # cdr_var is always computed explicitly; skip it in the varlist_region loop to avoid collision
     vlist_region_others = [v for v in varlist_region if v != cdr_var]
 
@@ -3430,10 +3436,37 @@ def gcam_postprocess_region_constApp(
             )
             for vname in varlist_region_cumfrac
         },
+        'total_dissolution_region': xr.DataArray(
+            _total_diss_region,
+            coords=coords_t, dims=['time'],
+            attrs={
+                'units': 'ton',
+                'description': 'Area-weighted regional total of cumulative feedstock dissolution: sum(total_dissolution * A_D) across deployments',
+            },
+        ),
+        'int_dust_ton_ha_yr_region': xr.DataArray(
+            _int_dust_region,
+            coords=coords_t, dims=['time'],
+            attrs={
+                'units': 'ton',
+                'description': 'Area-weighted regional total of cumulative applied feedstock: sum(int_dust_ton_ha_yr * A_D) across deployments',
+            },
+        ),
+        'fraction_total_dissolved_fromIntFlx_region': xr.DataArray(
+            np.where(
+                _int_dust_region > 0,
+                _total_diss_region / np.where(_int_dust_region > 0, _int_dust_region, 1),
+                np.nan,
+            ),
+            coords=coords_t, dims=['time'],
+            attrs={
+                'units': '',
+                'description': 'Area-weighted solid-phase dissolution fraction: sum(total_dissolution * A_D) / sum(int_dust_ton_ha_yr * A_D) across deployments',
+            },
+        ),
     })
 
     return ds_out
-
 
 def gcam_postprocess_all_dims_constApp(
     ds_trans:                xr.Dataset,
