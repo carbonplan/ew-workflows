@@ -3600,3 +3600,195 @@ def gcam_postprocess_all_dims_constApp(
     })
 
     return ds_combined
+
+
+# --- cation budget where feedstock is the source and we track all sinks
+def read_cation_budget_flx(
+    dfin: pd.DataFrame,
+    outdir: str,
+    dfin_cols_to_keep: list,
+    cation_list: list = None,
+    flx_subdir: str = 'flx',
+    flx_fn_prefix: str = 'int_flx_aq-',
+    threshold_frac: float = 0.02,
+    sic_minerals: list = None,
+    verbose: bool = False,
+) -> tuple:
+    """
+    For each run in dfin, read raw SCEPTER cation flux txt files and compute
+    the CDR-potential budget summed over all cations in cation_list.
+
+    Always includes: dustsp (primary source), adv (CDR), tflx (storage).
+    Conditionally includes other columns (except 'res') if their absolute
+    cumulative value at t_end >= threshold_frac * |dustsp cumulative at t_end|.
+    SIC minerals (cc, dlm, arg by default) that pass the threshold are grouped
+    into 'budget_sic'; other qualifying columns go into 'budget_other'.
+
+    Sign convention — uniform negation of raw SCEPTER file values:
+      Positive = source (adds cations to aqueous)
+      Negative = sink   (removes cations from aqueous / column)
+
+      budget_gbas     = -dustsp_rate  (+ : dissolution adds to aqueous)
+      budget_adv      = -adv_rate     (− : advection removes from column)
+      budget_tflx     = -tflx_rate    (+ when accumulating, − when releasing)
+      budget_sic      = -sic_rate     (+ when forming, − when dissolving)
+      budget_other    = -other_rate   (sign tracks aqueous gain/loss)
+      budget_residual = sum of all above  (≈ 0 if mass balance is closed)
+
+    Follows cfp.read_postproc_flux conventions for dfin_cols_to_keep.
+
+    Parameters
+    ----------
+    dfin : pd.DataFrame
+        Batch DataFrame; must have columns 'newrun_id_full' and 'dustsp'.
+    outdir : str
+        Base directory (local or s3://) for run outputs.
+    dfin_cols_to_keep : list
+        dfin columns to carry over to output DataFrames.
+    cation_list : list, optional
+        Cations to read. Default: ['ca', 'mg', 'na', 'k'].
+    flx_subdir : str
+        Subdirectory within each run folder holding flux txt files.
+    flx_fn_prefix : str
+        Filename prefix: '{flx_fn_prefix}{cat}.txt' → e.g. 'int_flx_aq-ca.txt'.
+    threshold_frac : float
+        Column is included only if |cum[-1]| >= threshold_frac * |gbas_cum[-1]|.
+    sic_minerals : list, optional
+        Column names treated as secondary inorganic carbonate minerals.
+    verbose : bool
+        If True, print which 'other' columns are included per run.
+
+    Returns
+    -------
+    df_int : pd.DataFrame
+        Time-integrated (cumulative) budget in t CO₂-equiv ha⁻¹.
+    df_transient : pd.DataFrame
+        Instantaneous rate budget in t CO₂-equiv ha⁻¹ yr⁻¹.
+    """
+    if cation_list is None:
+        cation_list = ['ca', 'mg', 'na', 'k']
+    if sic_minerals is None:
+        sic_minerals = ['cc', 'dlm', 'arg']
+
+    charge_dict = {'ca': 2, 'mg': 2, 'na': 1, 'k': 1}
+    M_CO2 = 44.0
+    conv  = 10000.0 / 1e6   # mol m⁻² → t CO₂-equiv ha⁻¹  (× charge × M_CO2)
+
+    int_dfs   = []
+    trans_dfs = []
+
+    for run in range(len(dfin)):
+        tdf    = dfin.iloc[run]
+        dustsp = tdf['dustsp']
+        runname = tdf['newrun_id_full']
+        flx_dir = os.path.join(outdir, runname, flx_subdir)
+
+        # --- load cation txt files ------------------------------------------
+        dfs_flx = {}
+        for cat in cation_list:
+            fn_path = os.path.join(flx_dir, f'{flx_fn_prefix}{cat}.txt')
+            try:
+                dfs_flx[cat] = pd.read_csv(fn_path, sep=r'\s+', engine='python')
+            except Exception as e:
+                print(f"  [run {run}] missing {cat}: {e}")
+
+        if not dfs_flx:
+            print(f"  [run {run}] no cation files found in {flx_dir}, skipping")
+            continue
+
+        first_cat = next(iter(dfs_flx))
+        t_col = dfs_flx[first_cat].columns[0]
+        _t    = dfs_flx[first_cat][t_col].values
+        n_t   = len(_t)
+
+        # --- accumulate raw-file rates across all cations (pre-negation) ----
+        gbas_rate  = np.zeros(n_t)
+        adv_rate   = np.zeros(n_t)
+        tflx_rate  = np.zeros(n_t)
+        sic_rate   = np.zeros(n_t)
+        other_rate = np.zeros(n_t)
+        other_cols_used = set()
+
+        for cat in cation_list:
+            if cat not in dfs_flx:
+                continue
+            df  = dfs_flx[cat]
+            tc  = df.columns[0]
+            ch  = charge_dict.get(cat, 1)
+            fac = ch * M_CO2 * conv   # mol m⁻² yr⁻¹ → t CO₂-equiv ha⁻¹ yr⁻¹
+
+            # cumulative (rate_avg × time) at each timestep for threshold check
+            cum = {c: df[c].values * _t for c in df.columns if c != tc}
+            gbas_final = abs(cum[dustsp][-1]) if dustsp in cum else 1.0
+
+            for col in df.columns:
+                if col == tc or col == 'res':
+                    continue
+                vals = df[col].values * fac
+                if col == dustsp:
+                    gbas_rate  += vals
+                elif col == 'adv':
+                    adv_rate   += vals
+                elif col == 'tflx':
+                    tflx_rate  += vals
+                elif col in sic_minerals:
+                    if col in cum and abs(cum[col][-1]) >= threshold_frac * gbas_final:
+                        sic_rate += vals
+                else:
+                    if col in cum and abs(cum[col][-1]) >= threshold_frac * gbas_final:
+                        other_rate += vals
+                        other_cols_used.add(col)
+
+        if verbose and other_cols_used:
+            print(f"  [run {run} | {runname[-40:]}] other cols: {sorted(other_cols_used)}")
+
+        # --- uniform negation: positive = source, negative = sink -----------
+        # Raw SCEPTER aqueous-flux files: positive = out of aqueous/column,
+        # negative = into aqueous (dissolution) or within-column phase change.
+        # Negating gives the intuitive sign: sources positive, sinks negative.
+        cdp_gbas  = -gbas_rate   # + : dissolution source
+        cdp_adv   = -adv_rate    # − : advection removes cations from column
+        cdp_tflx  = -tflx_rate   # + when exchange fills (captures), − when releases
+        cdp_sic   = -sic_rate    # + when SIC forms (captures), − when dissolves
+        cdp_other = -other_rate  # sign follows aqueous gain/loss
+
+        # residual = sum of all included terms; ≈ 0 if mass balance is closed
+        # (any non-zero residual equals the contribution of 'res' + excluded cols)
+        cdp_resid = cdp_gbas + cdp_adv + cdp_tflx + cdp_sic + cdp_other
+
+        # --- integrated (rate_avg × time = cumulative) -----------------------
+        run_int = pd.DataFrame({
+            'time':            _t,
+            'budget_gbas':     cdp_gbas  * _t,
+            'budget_adv':      cdp_adv   * _t,
+            'budget_tflx':     cdp_tflx  * _t,
+            'budget_sic':      cdp_sic   * _t,
+            'budget_other':    cdp_other * _t,
+            'budget_residual': cdp_resid * _t,
+            'runname':         runname,
+        })
+        for col in dfin_cols_to_keep:
+            run_int[col] = tdf[col]
+        int_dfs.append(run_int)
+
+        # --- transient (instantaneous rate = d(cumulative)/dt) ---------------
+        run_tr = pd.DataFrame({'time': _t, 'runname': runname})
+        for col_name, arr in [
+            ('budget_gbas',     cdp_gbas  * _t),
+            ('budget_adv',      cdp_adv   * _t),
+            ('budget_tflx',     cdp_tflx  * _t),
+            ('budget_sic',      cdp_sic   * _t),
+            ('budget_other',    cdp_other * _t),
+            ('budget_residual', cdp_resid * _t),
+        ]:
+            run_tr[col_name] = np.gradient(arr, _t)
+        for col in dfin_cols_to_keep:
+            run_tr[col] = tdf[col]
+        trans_dfs.append(run_tr)
+
+    if not int_dfs:
+        raise ValueError("No output produced — check paths and cation file locations.")
+
+    df_int       = pd.concat(int_dfs,   ignore_index=True)
+    df_transient = pd.concat(trans_dfs, ignore_index=True)
+    return df_int, df_transient
