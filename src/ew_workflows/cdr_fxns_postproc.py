@@ -3635,12 +3635,15 @@ def read_cation_budget_flx(
       budget_other    = -other_rate   (sign tracks aqueous gain/loss)
       budget_residual = sum of all above  (≈ 0 if mass balance is closed)
 
-    Follows cfp.read_postproc_flux conventions for dfin_cols_to_keep.
+    Output columns mirror cfp.read_postproc_flux conventions:
+      flx_type : 'int_flx' (integrated df) | 'flx' (transient df)
+      ctrl     : bool, from dfin['ctrl_run']
+      + all columns in dfin_cols_to_keep
 
     Parameters
     ----------
     dfin : pd.DataFrame
-        Batch DataFrame; must have columns 'newrun_id_full' and 'dustsp'.
+        Batch DataFrame; must have columns 'newrun_id_full', 'dustsp', 'ctrl_run'.
     outdir : str
         Base directory (local or s3://) for run outputs.
     dfin_cols_to_keep : list
@@ -3759,6 +3762,8 @@ def read_cation_budget_flx(
         # --- integrated (rate_avg × time = cumulative) -----------------------
         run_int = pd.DataFrame({
             'time':            _t,
+            'flx_type':        'int_flx',
+            'ctrl':            tdf['ctrl_run'],
             'budget_gbas':     cdp_gbas  * _t,
             'budget_adv':      cdp_adv   * _t,
             'budget_tflx':     cdp_tflx  * _t,
@@ -3772,7 +3777,8 @@ def read_cation_budget_flx(
         int_dfs.append(run_int)
 
         # --- transient (instantaneous rate = d(cumulative)/dt) ---------------
-        run_tr = pd.DataFrame({'time': _t, 'runname': runname})
+        run_tr = pd.DataFrame({'time': _t, 'flx_type': 'flx',
+                               'ctrl': tdf['ctrl_run'], 'runname': runname})
         for col_name, arr in [
             ('budget_gbas',     cdp_gbas  * _t),
             ('budget_adv',      cdp_adv   * _t),
