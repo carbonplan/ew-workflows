@@ -3503,6 +3503,8 @@ def gcam_postprocess_all_dims_constApp(
     site_dim:                str                    = 'site',
     region_col:              str                    = 'region_nospaces',
     verbose:                 bool                   = True,
+    use_integrated:          bool                   = True,
+    ds:                      xr.Dataset             = None,
 ) -> xr.Dataset:
     """
     Run postprocess_region for every combination of non-time dims in ds_trans,
@@ -3511,43 +3513,45 @@ def gcam_postprocess_all_dims_constApp(
     Parameters
     ----------
     ds_trans : xr.Dataset
-        Full transient dataset. Must have a 'time' dim and a site dim (see site_dim).
-        All other dims are discovered automatically and iterated over.
-        The positional index of each site in ds_trans must equal its GCAM reg_id.
+        Full transient dataset. Used for dimension discovery, iteration, and coordinate/metadata
+        lookups. Also serves as the ds_rep source when use_integrated=False.
     dfrock_dict : dict[str, pd.DataFrame]
         Rock flux dataframes keyed by apprate name string.
-        Each dataframe must have 'region' (name string) and 'reg_id' (int) columns.
     dsag_dict : dict[str, xr.Dataset]
         Cropland datasets keyed by apprate name string.
     varlist_deploy, varlist_region, varlist_region_cumfrac : list of str
         Passed through to postprocess_region.
     varlist_rco2_correction : list of str
         Variables to scale by rco2_correction_factor before deployment mapping and regional
-        aggregation, to account for GCAM's lower CDR potential per tonne of rock vs. SCEPTER.
-        Passed through to postprocess_region.
+        aggregation. Passed through to postprocess_region.
     rco2_correction_factor : float
-        Multiplicative correction applied to variables in varlist_rco2_correction.
-        Defined as RCO2_gcam / RCO2_scepter. Passed through to postprocess_region.
+        Multiplicative correction (RCO2_gcam / RCO2_scepter). Passed through.
     cdr_var, t_start, basalt_cdrpot :
         Passed through to postprocess_region.
     apprate_key_fn : Callable[[float], str]
         Maps an apprate coordinate value to a dfrock_dict / dsag_dict key.
-        Default: lambda v: f'{float(v)}-tHaYr-appRate'.
-        If 'apprate_base' is not a dim in ds_trans, the only key in dfrock_dict is used.
     site_dim : str
         Name of the site/region dimension in ds_trans (default 'site').
     region_col : str
-        Column in df_rock that matches ds_trans site coordinate values (default 'region_nospaces').
+        Column in df_rock that matches ds_trans site coordinate values.
     verbose : bool
         Print a progress line for each combination (default True).
+    use_integrated : bool
+        If True (default), derive ds_rep by differentiating ds (smooth, no aliasing).
+        If False, use ds_trans slices directly (original behavior).
+    ds : xr.Dataset or None
+        Time-integrated SCEPTER dataset. Required when use_integrated=True.
+        Must have the same non-time coordinates as ds_trans.
 
     Returns
     -------
     xr.Dataset
         Combined dataset with dims (time, deployment, <all loop dims>).
-        Only includes sites present in df_rock; inactive regions are skipped.
     """
     import itertools
+
+    if use_integrated and ds is None:
+        raise ValueError("ds must be provided when use_integrated=True")
 
     loop_dims  = [d for d in ds_trans.dims if d != 'time']
     dim_ranges = [range(ds_trans.sizes[d]) for d in loop_dims]
@@ -3557,49 +3561,53 @@ def gcam_postprocess_all_dims_constApp(
 
     results = []
     for k, indices in enumerate(itertools.product(*dim_ranges)):
-        isel_dict   = dict(zip(loop_dims, indices))
-        ds_rep      = ds_trans.isel(**isel_dict)
-        region_name = str(ds_rep[site_dim].values)
+        isel_dict    = dict(zip(loop_dims, indices))
+        ds_rep_meta  = ds_trans.isel(**isel_dict)   # always use ds_trans for coord/meta lookups
+        region_name  = str(ds_rep_meta[site_dim].values)
 
-        if 'apprate_base' in loop_dims:
-            apprate_key = apprate_key_fn(float(ds_rep['apprate_base'].values))
+        # Use apprate_base coord value whether it's a dim or was scalar-isel'd out;
+        # next(iter(dfrock_dict)) is only a safe fallback when apprate_base doesn't exist at all.
+        if 'apprate_base' in ds_rep_meta.coords:
+            apprate_key = apprate_key_fn(float(ds_rep_meta['apprate_base'].values))
         else:
             apprate_key = next(iter(dfrock_dict))
 
-        # Look up reg_id by matching region name — positional index in ds_trans
-        # is not the same as reg_id; df_rock's 'region' column is the source of truth.
         df_this     = dfrock_dict[apprate_key]
         region_rows = df_this[df_this[region_col] == region_name]
         if region_rows.empty:
             if verbose:
-                coord_str = ', '.join(f'{d}={ds_rep[d].values}' for d in loop_dims)
+                coord_str = ', '.join(f'{d}={ds_rep_meta[d].values}' for d in loop_dims)
                 print(f'[{k+1}/{n_total}]  {coord_str}  -> skipped (not in df_rock)')
             continue
         region_idx = int(region_rows['reg_id'].iloc[0])
 
         if verbose:
-            coord_str = ', '.join(f'{d}={ds_rep[d].values}' for d in loop_dims)
+            coord_str = ', '.join(f'{d}={ds_rep_meta[d].values}' for d in loop_dims)
             print(f'[{k+1}/{n_total}]  {coord_str}')
 
+        # Select and (optionally) differentiate the representative run
+        if use_integrated:
+            ds_rep = _int_to_flux(ds.isel(**isel_dict))
+        else:
+            ds_rep = ds_rep_meta
+
         ds_out = gcam_postprocess_region_constApp(
-            ds_rep                 = ds_rep,
-            df_rock                = dfrock_dict[apprate_key],
-            dsag                   = dsag_dict[apprate_key],
-            region_idx             = region_idx,
-            varlist_deploy         = varlist_deploy,
-            varlist_region         = varlist_region,
-            varlist_region_cumfrac = varlist_region_cumfrac,
+            ds_rep                  = ds_rep,
+            df_rock                 = dfrock_dict[apprate_key],
+            dsag                    = dsag_dict[apprate_key],
+            region_idx              = region_idx,
+            varlist_deploy          = varlist_deploy,
+            varlist_region          = varlist_region,
+            varlist_region_cumfrac  = varlist_region_cumfrac,
             varlist_rco2_correction = varlist_rco2_correction,
             rco2_correction_factor  = rco2_correction_factor,
-            cdr_var                = cdr_var,
-            t_start                = t_start,
-            basalt_cdrpot          = basalt_cdrpot,
+            cdr_var                 = cdr_var,
+            t_start                 = t_start,
+            basalt_cdrpot           = basalt_cdrpot,
         )
 
-        # Attach the scalar iteration coordinates from ds_rep so combine_by_coords
-        # can orient each result correctly, then promote them to proper dimensions.
         for dim in loop_dims:
-            ds_out = ds_out.assign_coords({dim: ds_rep[dim].values})
+            ds_out = ds_out.assign_coords({dim: ds_rep_meta[dim].values})
         ds_out = ds_out.expand_dims(loop_dims)
 
         results.append(ds_out)
@@ -3619,7 +3627,6 @@ def gcam_postprocess_all_dims_constApp(
     })
 
     return ds_combined
-
 
 # --- cation budget where feedstock is the source and we track all sinks
 def read_cation_budget_flx(
