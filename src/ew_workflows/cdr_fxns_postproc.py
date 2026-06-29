@@ -3628,11 +3628,11 @@ def read_cation_budget_flx(
       Positive = source (adds cations to aqueous)
       Negative = sink   (removes cations from aqueous / column)
 
-      budget_gbas     = -dustsp_rate  (+ : dissolution adds to aqueous)
-      budget_adv      = -adv_rate     (− : advection removes from column)
-      budget_tflx     = -tflx_rate    (+ when accumulating, − when releasing)
-      budget_sic      = -sic_rate     (+ when forming, − when dissolving)
-      budget_other    = -other_rate   (sign tracks aqueous gain/loss)
+      catbudget_gbas     = -dustsp_rate  (+ : dissolution adds to aqueous)
+      catbudget_adv      = -adv_rate     (− : advection removes from column)
+      catbudget_tflx     = -tflx_rate    (+ when accumulating, − when releasing)
+      catbudget_sic      = -sic_rate     (+ when forming, − when dissolving)
+      catbudget_other    = -other_rate   (sign tracks aqueous gain/loss)
       budget_residual = sum of all above  (≈ 0 if mass balance is closed)
 
     Output columns mirror cfp.read_postproc_flux conventions:
@@ -3764,12 +3764,12 @@ def read_cation_budget_flx(
             'time':            _t,
             'flx_type':        'int_flx',
             'ctrl':            tdf['ctrl_run'],
-            'budget_gbas':     cdp_gbas  * _t,
-            'budget_adv':      cdp_adv   * _t,
-            'budget_tflx':     cdp_tflx  * _t,
-            'budget_sic':      cdp_sic   * _t,
-            'budget_other':    cdp_other * _t,
-            'budget_residual': cdp_resid * _t,
+            'catbudget_gbas':     cdp_gbas  * _t,
+            'catbudget_adv':      cdp_adv   * _t,
+            'catbudget_tflx':     cdp_tflx  * _t,
+            'catbudget_sic':      cdp_sic   * _t,
+            'catbudget_other':    cdp_other * _t,
+            'catbudget_residual': cdp_resid * _t,
             'runname':         runname,
         })
         for col in dfin_cols_to_keep:
@@ -3780,12 +3780,12 @@ def read_cation_budget_flx(
         run_tr = pd.DataFrame({'time': _t, 'flx_type': 'flx',
                                'ctrl': tdf['ctrl_run'], 'runname': runname})
         for col_name, arr in [
-            ('budget_gbas',     cdp_gbas  * _t),
-            ('budget_adv',      cdp_adv   * _t),
-            ('budget_tflx',     cdp_tflx  * _t),
-            ('budget_sic',      cdp_sic   * _t),
-            ('budget_other',    cdp_other * _t),
-            ('budget_residual', cdp_resid * _t),
+            ('catbudget_gbas',     cdp_gbas  * _t),
+            ('catbudget_adv',      cdp_adv   * _t),
+            ('catbudget_tflx',     cdp_tflx  * _t),
+            ('catbudget_sic',      cdp_sic   * _t),
+            ('catbudget_other',    cdp_other * _t),
+            ('catbudget_residual', cdp_resid * _t),
         ]:
             run_tr[col_name] = np.gradient(arr, _t)
         for col in dfin_cols_to_keep:
