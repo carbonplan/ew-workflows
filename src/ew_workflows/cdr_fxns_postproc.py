@@ -711,6 +711,15 @@ def cdr_int_per_group(
         dfin = flx_dict[tc]
         outdict_full[tc], outdict_sum[tc] = rockdiss_synth(dfin, time_horizon, dfin_cols_to_keep, bysite=bysite)
 
+    # --- OPTION 6: "catbudget_flx" ------------------------------------------
+    if "catbudget_flx" in calc_list:
+        tc = 'catbudget_flx'
+        print(f"solving {tc}")
+        dfin_cb = flx_dict[tc]
+        outdict_full[tc], outdict_sum[tc] = catbudget_cdr(
+            dfin_cb, time_horizon, dfin_cols_to_keep,
+            bysite=bysite, ctrl_params=ctrl_params,
+        )
     # 
     # return the result
     # 
@@ -1654,6 +1663,16 @@ def cdr_ds(
         print(f"solving {tc}")
         dfin = cdr_dict[tc]
         dsout_dict[tc] = rockdiss_ds(dfin, dims, convert_time_to_timestep=convert_time_to_timestep)
+
+    # --- OPTION 6: "catbudget_flx" ------------------------------------------
+    if "catbudget_flx" in cdr_calc_list:
+        tc = 'catbudget_flx'
+        print(f"solving {tc}")
+        dfin_cb = cdr_dict[tc]
+        dsout_dict[tc] = catbudget_cdr_ds(
+            dfin_cb, dims,
+            convert_time_to_timestep=convert_time_to_timestep,
+        )
 
     # return dsout_dict
     # merge the dictionary of datasets into a single ds
