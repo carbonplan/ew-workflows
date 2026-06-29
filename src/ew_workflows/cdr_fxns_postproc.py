@@ -3976,7 +3976,7 @@ def catbudget_cdr_ds(
         dfin_cols_to_keep_time).  Must be columns in dfin.
     convert_time_to_timestep : bool
         When True, replaces time coordinate with a step index via
-        cfp.df_to_ds_with_time (for runs with slightly different time grids).
+        df_to_ds_with_time (for runs with slightly different time grids).
 
     Returns
     -------
@@ -3993,7 +3993,7 @@ def catbudget_cdr_ds(
     if not convert_time_to_timestep:
         dsx = xr.Dataset.from_dataframe(dfx.set_index(dims))
     else:
-        dsx = cfp.df_to_ds_with_time(dims, dfx)
+        dsx = df_to_ds_with_time(dims, dfx)
 
     # attach attributes (mirrors co2_flx_cdr_ds)
     dsx.attrs['flx_type'] = dfin['flx_type'].iloc[0]
