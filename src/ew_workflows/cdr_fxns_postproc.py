@@ -3815,3 +3815,176 @@ def read_cation_budget_flx(
     df_int       = pd.concat(int_dfs,   ignore_index=True)
     df_transient = pd.concat(trans_dfs, ignore_index=True)
     return df_int, df_transient
+
+
+def catbudget_cdr(
+    dfin: pd.DataFrame,
+    time_horizon: float,
+    dfin_cols_to_keep: list,
+    bysite: bool = False,
+    ctrl_params: list = None,
+) -> tuple:
+    """
+    Post-process catbudget_flx DataFrame from read_cation_budget_flx:
+    subtract control from each case run (if control data is present) and
+    clip to time_horizon.
+
+    Mirrors co2_flx_cdr / cation_flx_cdr in cdr_fxns_postproc.py.
+    Control subtraction is attempted but skipped gracefully when no matching
+    control is found — analogous to rockdiss_synth, since control runs may not
+    have raw aqueous-flux txt files (no rock applied → no dissolution budget).
+
+    Parameters
+    ----------
+    dfin : pd.DataFrame
+        Output from read_cation_budget_flx (flx_type='int_flx' or 'flx').
+        May contain both case (ctrl=False) and control (ctrl=True) rows.
+    time_horizon : float
+        Clip to this time (yr) and take summary row at the horizon.
+    dfin_cols_to_keep : list
+        Coordinate columns to carry forward.
+    bysite : bool
+        Match control by site when ctrl_params is None.
+    ctrl_params : list
+        Columns used to uniquely match a case to its control run (overrides bysite).
+
+    Returns
+    -------
+    dfout_full : pd.DataFrame
+        Budget timeseries for each case run (control-subtracted if available).
+    dfout_sum : pd.DataFrame
+        Budget values at t = time_horizon (one row per case run).
+    """
+    catbudget_cols = ['catbudget_gbas', 'catbudget_adv', 'catbudget_tflx',
+                      'catbudget_sic', 'catbudget_other', 'catbudget_residual']
+    cols_to_keep = ['time', 'flx_type', 'runname'] + dfin_cols_to_keep
+
+    df_ctrl = dfin.loc[dfin['ctrl'] == True]
+    df_case = dfin.loc[dfin['ctrl'] == False]
+    ctrl_available = len(df_ctrl) > 0
+
+    if not ctrl_available:
+        print("  NOTE: no control rows in dfin — using raw case values (no subtraction).")
+    if not bysite and ctrl_params is None and ctrl_available:
+        _ctrl_num = df_ctrl.select_dtypes(include=[np.number])
+
+    case_names = df_case['runname'].unique()
+    casedx = 0
+
+    for case in case_names:
+        tdf    = df_case[df_case['runname'] == case].copy()
+        tdfout = tdf[cols_to_keep].copy()
+
+        # copy budget columns from case (default — no subtraction)
+        for col in catbudget_cols:
+            if col in tdf.columns:
+                tdfout[col] = tdf[col].values
+
+        # attempt control subtraction if control data exists
+        if ctrl_available:
+            if ctrl_params:
+                mask = np.logical_and.reduce(
+                    [df_ctrl[c] == tdf[c].iloc[0] for c in ctrl_params]
+                )
+                tdf_ctrl = df_ctrl.loc[mask].select_dtypes(include=[np.number])
+            elif bysite:
+                tdf_ctrl = df_ctrl[
+                    df_ctrl['site'] == tdf['site'].values[0]
+                ].select_dtypes(include=[np.number])
+            else:
+                tdf_ctrl = _ctrl_num
+
+            if len(tdf_ctrl) == 0:
+                print(f"  WARNING: no control match for {case.split('/')[-1][-50:]} — skipping subtraction")
+            else:
+                # handle time-grid mismatch by interpolation (mirrors co2_flx_cdr)
+                if len(tdf) != len(tdf_ctrl):
+                    tdf_ctrl = (
+                        tdf_ctrl.set_index('time')
+                        .reindex(tdf['time'].values)
+                        .interpolate(method='linear')
+                        .reset_index()
+                    )
+                for col in catbudget_cols:
+                    if col in tdf.columns and col in tdf_ctrl.columns:
+                        tdfout[col] = tdf[col].values - tdf_ctrl[col].values
+
+        # clip to time horizon
+        tdfout = tdfout.loc[
+            tdfout['time'] <= (time_horizon + 1e-6)
+        ].reset_index(drop=True)
+
+        # add pipeline-standard metadata columns
+        tdfout['time_horizon'] = time_horizon
+        tdfout['cdr_fxn']      = 'catbudget_flx'
+        tdfout['units']        = dfin['units'].iloc[0]
+
+        # summary row: budget values at the time horizon
+        tdf_summary = (
+            tdfout[tdfout['time'] == tdfout['time'].max()]
+            .drop(columns=['time'])
+            .copy()
+        )
+
+        if casedx == 0:
+            dfout_full = tdfout.copy()
+            dfout_sum  = tdf_summary.copy()
+        else:
+            dfout_full = pd.concat([dfout_full, tdfout],      ignore_index=True)
+            dfout_sum  = pd.concat([dfout_sum,  tdf_summary], ignore_index=True)
+
+        casedx += 1
+
+    dfout_full['cdr_fxn'] = 'catbudget_flx'
+    dfout_sum['cdr_fxn']  = 'catbudget_flx'
+    return dfout_full, dfout_sum
+
+def catbudget_cdr_ds(
+    dfin: pd.DataFrame,
+    dims: list,
+    convert_time_to_timestep: bool = False,
+) -> xr.Dataset:
+    """
+    Convert catbudget_cdr output DataFrame to an xarray Dataset.
+    Analogous to co2_flx_cdr_ds, without the loss_percent dimension.
+
+    Parameters
+    ----------
+    dfin : pd.DataFrame
+        Output from catbudget_cdr (timeseries or summary form).
+    dims : list
+        Index columns for the Dataset (e.g. dfin_cols_to_keep or
+        dfin_cols_to_keep_time).  Must be columns in dfin.
+    convert_time_to_timestep : bool
+        When True, replaces time coordinate with a step index via
+        cfp.df_to_ds_with_time (for runs with slightly different time grids).
+
+    Returns
+    -------
+    xr.Dataset
+        Dataset with catbudget_* variables and coordinate metadata attributes.
+    """
+    catbudget_cols = ['catbudget_gbas', 'catbudget_adv', 'catbudget_tflx',
+                      'catbudget_sic', 'catbudget_other', 'catbudget_residual']
+
+    # drop metadata columns that shouldn't become data variables
+    cols_to_discard = ['units', 'flx_type', 'cdr_fxn', 'time_horizon']
+    dfx = dfin.drop(columns=[c for c in cols_to_discard if c in dfin.columns])
+
+    if not convert_time_to_timestep:
+        dsx = xr.Dataset.from_dataframe(dfx.set_index(dims))
+    else:
+        dsx = cfp.df_to_ds_with_time(dims, dfx)
+
+    # attach attributes (mirrors co2_flx_cdr_ds)
+    dsx.attrs['flx_type'] = dfin['flx_type'].iloc[0]
+    units_str = dfin['units'].iloc[0]
+    for var_name in dsx.data_vars:
+        if var_name in catbudget_cols:
+            dsx[var_name].attrs['units']   = units_str
+            dsx[var_name].attrs['cdr_fxn'] = 'catbudget_flx'
+
+    if 'time_horizon' in dfin.columns:
+        dsx['time_horizon'] = dfin['time_horizon'].iloc[0]
+
+    return dsx
