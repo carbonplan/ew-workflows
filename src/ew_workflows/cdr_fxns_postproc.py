@@ -3622,7 +3622,11 @@ def read_cation_budget_flx(
     Conditionally includes other columns (except 'res') if their absolute
     cumulative value at t_end >= threshold_frac * |dustsp cumulative at t_end|.
     SIC minerals (cc, dlm, arg by default) that pass the threshold are grouped
-    into 'budget_sic'; other qualifying columns go into 'budget_other'.
+    into 'catbudget_sic'; other qualifying columns go into 'catbudget_other'.
+
+    Control runs: the dustsp column (e.g. 'gbas') is absent when no rock is
+    applied. If detected, a zero column is injected so controls are processed
+    consistently with case runs (catbudget_gbas = 0 for controls by construction).
 
     Sign convention — uniform negation of raw SCEPTER file values:
       Positive = source (adds cations to aqueous)
@@ -3633,10 +3637,11 @@ def read_cation_budget_flx(
       catbudget_tflx     = -tflx_rate    (+ when accumulating, − when releasing)
       catbudget_sic      = -sic_rate     (+ when forming, − when dissolving)
       catbudget_other    = -other_rate   (sign tracks aqueous gain/loss)
-      budget_residual = sum of all above  (≈ 0 if mass balance is closed)
+      catbudget_residual = sum of all above  (≈ 0 if mass balance is closed)
 
     Output columns mirror cfp.read_postproc_flux conventions:
       flx_type : 'int_flx' (integrated df) | 'flx' (transient df)
+      units    : 't CO2-equiv ha-1' | 't CO2-equiv ha-1 yr-1'
       ctrl     : bool, from dfin['ctrl_run']
       + all columns in dfin_cols_to_keep
 
@@ -3681,8 +3686,9 @@ def read_cation_budget_flx(
     trans_dfs = []
 
     for run in range(len(dfin)):
-        tdf    = dfin.iloc[run]
-        dustsp = tdf['dustsp']
+        tdf     = dfin.iloc[run]
+        dustsp  = tdf['dustsp']
+        is_ctrl = bool(tdf['ctrl_run'])
         runname = tdf['newrun_id_full']
         flx_dir = os.path.join(outdir, runname, flx_subdir)
 
@@ -3698,6 +3704,15 @@ def read_cation_budget_flx(
         if not dfs_flx:
             print(f"  [run {run}] no cation files found in {flx_dir}, skipping")
             continue
+
+        # --- control runs: dustsp column absent (no rock applied) -----------
+        # inject a zero column so controls are processed identically to cases
+        # (catbudget_gbas = 0 for controls by construction)
+        if is_ctrl:
+            for cat, df in dfs_flx.items():
+                if dustsp not in df.columns:
+                    dfs_flx[cat] = df.copy()
+                    dfs_flx[cat][dustsp] = 0.0
 
         first_cat = next(iter(dfs_flx))
         t_col = dfs_flx[first_cat].columns[0]
@@ -3761,16 +3776,17 @@ def read_cation_budget_flx(
 
         # --- integrated (rate_avg × time = cumulative) -----------------------
         run_int = pd.DataFrame({
-            'time':            _t,
-            'flx_type':        'int_flx',
-            'ctrl':            tdf['ctrl_run'],
+            'time':               _t,
+            'flx_type':           'int_flx',
+            'units':              't CO2-equiv ha-1',
+            'ctrl':               is_ctrl,
             'catbudget_gbas':     cdp_gbas  * _t,
             'catbudget_adv':      cdp_adv   * _t,
             'catbudget_tflx':     cdp_tflx  * _t,
             'catbudget_sic':      cdp_sic   * _t,
             'catbudget_other':    cdp_other * _t,
             'catbudget_residual': cdp_resid * _t,
-            'runname':         runname,
+            'runname':            runname,
         })
         for col in dfin_cols_to_keep:
             run_int[col] = tdf[col]
@@ -3778,7 +3794,8 @@ def read_cation_budget_flx(
 
         # --- transient (instantaneous rate = d(cumulative)/dt) ---------------
         run_tr = pd.DataFrame({'time': _t, 'flx_type': 'flx',
-                               'ctrl': tdf['ctrl_run'], 'runname': runname})
+                               'units': 't CO2-equiv ha-1 yr-1',
+                               'ctrl': is_ctrl, 'runname': runname})
         for col_name, arr in [
             ('catbudget_gbas',     cdp_gbas  * _t),
             ('catbudget_adv',      cdp_adv   * _t),
