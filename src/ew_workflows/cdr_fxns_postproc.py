@@ -3987,13 +3987,18 @@ def catbudget_cdr_ds(
                       'catbudget_sic', 'catbudget_other', 'catbudget_residual']
 
     # drop metadata columns that shouldn't become data variables
-    cols_to_discard = ['units', 'flx_type', 'cdr_fxn', 'time_horizon']
+    cols_to_discard = ['units', 'flx_type', 'cdr_fxn', 'time_horizon', 'runname']
     dfx = dfin.drop(columns=[c for c in cols_to_discard if c in dfin.columns])
 
     if not convert_time_to_timestep:
         dsx = xr.Dataset.from_dataframe(dfx.set_index(dims))
     else:
-        dsx = df_to_ds_with_time(dims, dfx)
+        # Drop 'time' before df_to_ds_with_time: catbudget reads raw txt files
+        # whose time grids can differ slightly from pkl-based datasets (co2_flx,
+        # etc.).  Keeping 'time' here causes a MergeError on the shared 'time'
+        # variable.  The merged output already gets 'time' from the other datasets.
+        dfx_ts = dfx.drop(columns=['time'], errors='ignore')
+        dsx = df_to_ds_with_time(dims, dfx_ts)
 
     # attach attributes (mirrors co2_flx_cdr_ds)
     dsx.attrs['flx_type'] = dfin['flx_type'].iloc[0]
