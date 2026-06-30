@@ -2492,18 +2492,21 @@ def prof_batchprocess_allvars(
     proc_dict: dict=proc_dict_default,
     subdir: str="postproc_profs",
     print_loop_updates: bool=False,
+    save_path: str=None,
+    filename_suffix: str="batch",
 ) -> dict:
     '''
     Wrapper around prof_batchprocess_singlevar to repeat that function for all
-    variables in the proc_dict. Resulting datasets are stored in a 
-    dictionary to be saved later
+    variables in the proc_dict. Resulting datasets are stored in a
+    dictionary to be saved later, or written to zarr stores immediately
+    to keep peak memory to one variable at a time.
 
     Parameters
     ----------
     outdir : str
         path to the SCEPTER output directory. Usually something like 'my/path/SCEPTER/scepter_output'
     dustsp : str
-        name of the dust species (only required if we're reading in the dust 
+        name of the dust species (only required if we're reading in the dust
         data to get the integrated dust flux)
     dfin : pd.DataFrame
         the batch dataframe that defines each run in the batch
@@ -2512,24 +2515,39 @@ def prof_batchprocess_allvars(
         the profile equivalent of 'dfin_cols_to_keep' in flux postprocessing land
     proc_dict : dict
         keys should be `filename_base` value inputs to prof_batchprocess_singlevar.
-        Values should be True | False. True means the prof_batchprocess_singlevar 
+        Values should be True | False. True means the prof_batchprocess_singlevar
         function will be run
     subdir : str
-        name of the subdirectory where the .nc files are stored (not used for now 
+        name of the subdirectory where the .nc files are stored (not used for now
         because there's a default set in prof_batchprocess_singlevar)
     print_loop_updates : bool
-        True to print out the profile variable currently being compiled. 
-    
+        True to print out the profile variable currently being compiled.
+    save_path : str, optional
+        If provided, each variable's dataset is written to a zarr store under
+        this directory immediately after it is computed, then freed from memory.
+        This keeps peak RAM usage to roughly one variable at a time instead of
+        accumulating all variables simultaneously. The zarr store names match
+        the convention used by save_batch_postproc_profOnly:
+        ``{key}_{dustsp}_{filename_suffix}.zarr``.
+        When set, the returned dict maps variable names to zarr store paths
+        (strings) rather than in-memory datasets.
+    filename_suffix : str
+        Suffix appended to zarr store filenames when save_path is set.
+        Default ``"batch"`` matches save_batch_postproc_profOnly's default.
+
     Returns
     -------
     dict
-        dictionary where each key is a filename_base from proc_dict elements
-        with values == True. Each value in the output dict is an xarray 
-        dataset with the batch_postprocess result. 
+        When save_path is None: dictionary where each key is a filename_base
+        from proc_dict elements with values == True, and each value is the
+        corresponding xarray Dataset held in memory (original behaviour).
+        When save_path is set: dictionary mapping each key to the path of
+        the zarr store written to disk/S3, so results can be read back
+        individually with xr.open_zarr(path).
     '''
-    # empty dict to hold results
+    # empty dict to hold results (datasets or zarr paths)
     outdict = {}
-    # update user 
+    # update user
     print(f"compiling profile data for {dustsp}")
 
     # loop through the process dict
@@ -2542,9 +2560,15 @@ def prof_batchprocess_allvars(
             if not ds.variables: # continue to next iter if it is empty
                 print(f"Warning: batch profile processing {key} returned no results. Check for typos?")
                 continue
-            # ori suggests: print(outdict)
-            outdict[key] = ds
-            # ds.to_netcdf()
+            if save_path is not None:
+                # write immediately and free memory so only one variable is
+                # resident at a time
+                zarr_path = os.path.join(save_path, f"{key}_{dustsp}_{filename_suffix}.zarr")
+                ds.to_zarr(zarr_path)
+                outdict[key] = zarr_path
+                del ds
+            else:
+                outdict[key] = ds
     # return result
     return outdict
 
