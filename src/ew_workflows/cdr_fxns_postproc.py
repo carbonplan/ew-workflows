@@ -2299,7 +2299,158 @@ def filter_mismatched_time_coords_fuzzy(
 
     # return result
     return aligned_ds_list
-    
+
+
+def _prof_batchprocess_singlevar_zarr(
+    dfin: pd.DataFrame,
+    outdir: str,
+    batch_axes: list,
+    filename_base: str,
+    dustsp: str,
+    zarr_path: str,
+    print_progress: bool = False,
+) -> xr.Dataset:
+    """
+    Two-pass, O(1-run) memory implementation of prof_batchprocess_singlevar.
+
+    Pass 1 (lightweight): read only time coordinates and rockdiss pkl files to
+    discover which runs are valid and what the full batch coordinate grid is.
+    Pass 2 (data): read one run at a time, write its data to the correct region
+    of the zarr store, then immediately discard it.
+
+    Returns xr.open_zarr(zarr_path) (lazy).
+    """
+    import gc
+
+    # ---- Pass 1: scan metadata ----
+    run_meta = []  # (row, dustrate_mean, dustdf, time_array)
+    for _, row in dfin.iterrows():
+        tmpds = read_profile_nc(outdir, filename_base, row)
+        if tmpds is None:
+            continue
+        t = tmpds["time"].values.copy()
+        tmpds.close()
+        del tmpds
+        dustrate_mean, dustdf = get_timemean_dustrate(
+            outdir, row, dustsp, return_df=True
+        )
+        run_meta.append((row, dustrate_mean, dustdf, t))
+
+    if not run_meta:
+        return xr.Dataset()
+
+    # ---- Filter mismatched time coords (replicate filter_mismatched_time_coords_fuzzy) ----
+    groups = []
+    for i, (*_, t) in enumerate(run_meta):
+        placed = False
+        for g in groups:
+            if time_is_close(t, g["ref_t"]):
+                g["indices"].append(i)
+                placed = True
+                break
+        if not placed:
+            groups.append({"ref_t": t, "indices": [i]})
+    best = max(groups, key=lambda g: len(g["indices"]))
+    reference_time = best["ref_t"]
+    valid_meta = [run_meta[i] for i in best["indices"]]
+    dropped = len(run_meta) - len(valid_meta)
+    if dropped:
+        print(f"⚠️ {filename_base}: dropped {dropped} run(s) with mismatched time coords")
+
+    # ---- Read first valid run to get inner dimension / variable structure ----
+    first_row, first_dr, first_dustdf, _ = valid_meta[0]
+    tmpds_first = read_profile_nc(outdir, filename_base, first_row)
+    tmpds_first.coords["time"] = ("time", reference_time)
+    if filename_base != "soil_ph" and first_dustdf is not None:
+        _dd = xr.Dataset.from_dataframe(first_dustdf.set_index("time"))
+        _dd = _dd.reindex(time=tmpds_first["time"])
+        tmpds_first = xr.merge([tmpds_first, _dd["int_dust_ton_ha_yr"]])
+    inner_dims = list(tmpds_first.dims)
+    inner_coords = {d: tmpds_first[d].values.copy() for d in inner_dims}
+    var_dims_map = {v: list(tmpds_first[v].dims) for v in tmpds_first.data_vars}
+    var_dtypes = {v: tmpds_first[v].dtype for v in tmpds_first.data_vars}
+    tmpds_first.close()
+    del tmpds_first
+    gc.collect()
+
+    # ---- Build full batch coordinate grids ----
+    batch_coord_vals = {}
+    for col in batch_axes:
+        if col == "dustrate_ton_ha_yr":
+            vals = sorted({
+                round(dr, 3) for _, dr, _, _ in valid_meta if dr is not None
+            })
+            if not vals and col in dfin.columns:
+                vals = sorted(set(dfin[col].dropna().tolist()))
+        else:
+            vals = sorted(set(dfin[col].dropna().tolist())) if col in dfin.columns else []
+        batch_coord_vals[col] = vals
+
+    batch_sizes = tuple(len(batch_coord_vals[col]) for col in batch_axes)
+    all_coords = {**{col: batch_coord_vals[col] for col in batch_axes}, **inner_coords}
+
+    # ---- Create zarr scaffold (NaN / zero filled) ----
+    template_vars = {}
+    for var, var_dims in var_dims_map.items():
+        full_dims = list(batch_axes) + var_dims
+        inner_sizes = tuple(len(inner_coords[d]) for d in var_dims)
+        full_shape = batch_sizes + inner_sizes
+        coords_for_var = {k: v for k, v in all_coords.items() if k in full_dims}
+        fill = np.nan if np.issubdtype(var_dtypes[var], np.floating) else 0
+        template_vars[var] = xr.DataArray(
+            np.full(full_shape, fill, dtype=var_dtypes[var]),
+            dims=full_dims,
+            coords=coords_for_var,
+        )
+    xr.Dataset(template_vars).to_zarr(zarr_path, mode="w")
+    del template_vars
+    gc.collect()
+
+    # ---- Pass 2: fill zarr one run at a time ----
+    canonical_dims = list(batch_axes) + inner_dims
+    for run_idx, (row, dustrate_mean, dustdf, _) in enumerate(valid_meta):
+        if print_progress and (run_idx % 50 == 0):
+            print(f"  {filename_base}: writing run {run_idx + 1}/{len(valid_meta)}")
+        tmpds = read_profile_nc(outdir, filename_base, row)
+        if tmpds is None:
+            continue
+        tmpds.coords["time"] = ("time", reference_time)
+
+        if filename_base != "soil_ph" and dustdf is not None:
+            _dd = xr.Dataset.from_dataframe(dustdf.set_index("time"))
+            _dd = _dd.reindex(time=tmpds["time"])
+            tmpds = xr.merge([tmpds, _dd["int_dust_ton_ha_yr"]])
+
+        # find the region slice in the zarr store for each batch axis
+        region = {}
+        for col in batch_axes:
+            val = round(dustrate_mean, 3) if (col == "dustrate_ton_ha_yr" and dustrate_mean is not None) else row[col]
+            arr = batch_coord_vals[col]
+            try:
+                idx = int(np.argmin(np.abs(np.array(arr, dtype=float) - float(val))))
+            except (TypeError, ValueError):
+                idx = arr.index(val)
+            region[col] = slice(idx, idx + 1)
+
+        # expand dims and assign coords to get the right shape for the region write
+        for col in batch_axes:
+            val = round(dustrate_mean, 3) if (col == "dustrate_ton_ha_yr" and dustrate_mean is not None) else row[col]
+            tmpds = tmpds.assign_coords({col: (col, [val])})
+            tmpds = tmpds.assign({v: tmpds[v].expand_dims(col) for v in tmpds.data_vars})
+
+        # transpose each variable to match the zarr store's canonical dim order
+        tmpds = tmpds.assign({
+            v: tmpds[v].transpose(*[d for d in canonical_dims if d in tmpds[v].dims])
+            for v in tmpds.data_vars
+        })
+
+        tmpds.to_zarr(zarr_path, region=region)
+        tmpds.close()
+        del tmpds
+        gc.collect()
+
+    return xr.open_zarr(zarr_path)
+
 
 def prof_batchprocess_singlevar(
     dfin: pd.DataFrame,
@@ -2308,10 +2459,11 @@ def prof_batchprocess_singlevar(
     filename_base: str,
     dustsp: str=None,
     subdir: str = "postproc_profs",
+    zarr_path: str = None,
 ) -> xr.Dataset:
     '''
     read in individual nc files from the postproc_profs directory
-    and combine them into a single file defined over dimensions 
+    and combine them into a single file defined over dimensions
     in batch_axes
 
     Parameters
@@ -2326,16 +2478,26 @@ def prof_batchprocess_singlevar(
     filename_base : str
         name of the .nc file excluding '.nc'
     dustsp : str
-        name of the dust species (only required if we're reading in the dust 
+        name of the dust species (only required if we're reading in the dust
         data to get the integrated dust flux)
     subdir : str
         name of the subdirectory where the .nc files are stored
-    
+    zarr_path : str, optional
+        If provided, use the two-pass memory-efficient implementation that writes
+        one run at a time to this zarr store instead of accumulating all runs in
+        a ds_list before merging. Peak RAM is ~1 run instead of all runs combined.
+        The store is created fresh; pass a path that does not yet exist.
+        Returns xr.open_zarr(zarr_path) (lazy).
+
     Returns
     -------
     xr.Dataset
         combination of all xarray datasets in the batch
     '''
+    if zarr_path is not None:
+        return _prof_batchprocess_singlevar_zarr(
+            dfin, outdir, batch_axes, filename_base, dustsp, zarr_path
+        )
 
     # loop through all runs
     ds_list = []
@@ -2555,19 +2717,23 @@ def prof_batchprocess_allvars(
         if print_loop_updates:
             print(key)
         if runme:
-            ds = prof_batchprocess_singlevar(dfin, outdir, batch_axes, key, dustsp)
-            # make sure it's not empty
-            if not ds.variables: # continue to next iter if it is empty
-                print(f"Warning: batch profile processing {key} returned no results. Check for typos?")
-                continue
             if save_path is not None:
-                # write immediately and free memory so only one variable is
-                # resident at a time
+                # Pass the final zarr path directly into prof_batchprocess_singlevar
+                # so it writes one run at a time (O(1-run) peak RAM per variable).
                 zarr_path = os.path.join(save_path, f"{key}_{dustsp}_{filename_suffix}.zarr")
-                ds.to_zarr(zarr_path)
+                ds = prof_batchprocess_singlevar(
+                    dfin, outdir, batch_axes, key, dustsp, zarr_path=zarr_path
+                )
+                if not ds.variables:
+                    print(f"Warning: batch profile processing {key} returned no results. Check for typos?")
+                    continue
                 outdict[key] = zarr_path
                 del ds
             else:
+                ds = prof_batchprocess_singlevar(dfin, outdir, batch_axes, key, dustsp)
+                if not ds.variables:
+                    print(f"Warning: batch profile processing {key} returned no results. Check for typos?")
+                    continue
                 outdict[key] = ds
     # return result
     return outdict
@@ -3195,6 +3361,40 @@ def find_control_runs(
 # ----------------------------------------------------------------------------------
 # [ ADD FUNCTIONS FOR GCAM POSTPROCESSING ]
 # 
+def _int_to_flux(ds_int: xr.Dataset) -> xr.Dataset:
+    """
+    Differentiate time-integrated SCEPTER outputs to recover instantaneous flux rates.
+    Only variables with a 'time' dimension are differentiated; others pass through unchanged.
+    Variables whose names start with 'fraction_' are always passed through unchanged —
+    they represent dimensionless ratios that should not be differentiated.
+
+    Also renames 'tonHa_' → 'tonHaYr_' (e.g. co2pot_adv_tonHa_camg → co2pot_adv_tonHaYr_camg)
+    and appends ' yr-1' to any existing units attribute (for differentiated vars only), so
+    the result is a drop-in replacement for a ds_trans slice.
+    """
+    t = ds_int.time.values
+
+    # Rename cumulative 'tonHa' vars → 'tonHaYr' to match ds_trans naming convention;
+    # the derivative d(t/ha)/dt has units t/ha/yr, consistent with the 'Yr' suffix.
+    rename_map = {
+        v: v.replace('tonHa_', 'tonHaYr_')
+        for v in ds_int.data_vars
+        if 'tonHa_' in v and 'tonHaYr' not in v
+    }
+    ds_work = ds_int.rename(rename_map) if rename_map else ds_int
+
+    updates = {}
+    for vname in ds_work.data_vars:
+        arr = ds_work[vname]
+        if 'time' in arr.dims and not vname.startswith('fraction_'):
+            new_attrs = dict(arr.attrs)
+            if new_attrs.get('units', ''):
+                new_attrs['units'] = new_attrs['units'].rstrip() + ' yr-1'
+            updates[vname] = xr.DataArray(
+                np.gradient(arr.values, t),
+                coords=arr.coords, dims=arr.dims, attrs=new_attrs,
+            )
+    return ds_work.assign(updates)
 
 def gcam_postprocess_region_constApp(
     ds_rep:                  xr.Dataset,
