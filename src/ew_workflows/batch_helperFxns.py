@@ -1,13 +1,15 @@
 # --------------------------------------------
-# 
+#
 # helper functions for building the batch
 # input .csv files
-# 
+#
 # --------------------------------------------
+import io
 import itertools
 import os
 import warnings
 
+import fsspec
 import numpy as np
 import pandas as pd
 import xarray as xr
@@ -882,6 +884,7 @@ scepter_densities = { # [g cm-3]
     'amnt': 1.725,   
     'cc': 2.71,
     'gbas': 3.0,   # confirmed in scepter_richards.f90 "! assuming 3.0 g/cm3 particle density"
+    'gbas2': 3.0,  # gbas2 holds mwt fixed at mwtgbas, so mv = mwt/3.0 gives the same density as gbas
 }
 
 # [ roughness factor equations ]
@@ -966,3 +969,324 @@ def rockmass_given_sa(
         ds = ds.assign_coords(sa_fixed=SA_FIXED).expand_dims("sa_fixed")
 
     return ds
+
+
+# %% ──────────────────────────────────────────────────────────────────────────
+# [ DGSA CLIMATE DIRECTORY BUILDER ]
+# ─────────────────────────────────────────────────────────────────────────────
+
+def build_dgsa_climatedirs(
+    df_treat: pd.DataFrame,
+    base_clim_s3: str,
+    clim_selection_label: str,
+    exp_set: str,
+    dgsa_version: str,
+    ref_apprate: float,
+    apprate_suffix: str,
+    runtype: str,
+    deg_resolution: int = 1,
+    dryrun: bool = False,
+    save_validation_plots: bool = False,
+    verbose: bool = True,
+) -> pd.Series:
+    """
+    For each row in df_treat, copy the reference fixed-apprate climate dir to a
+    DGSA-specific destination named by a unique integer identifier (paramSet_N)
+    and write scaled versions of Dust_temp.in and q_temp.in.
+
+    df_treat must contain a 'paramSet_id' column (1-indexed integers) that
+    provides the stable identifier for each treatment row.
+
+    Source dir:
+        {base_clim_s3}/{clim_selection_label}/{exp_set}/{ref_apprate}{apprate_suffix}/
+            {region}_{deg}_{runtype}/
+
+    Destination dir:
+        {base_clim_s3}/_dgsa/{dgsa_version}/{clim_selection_label}/{exp_set}/
+            paramSet_{paramSet_id}/{region}_{deg}_{runtype}/
+
+    A summary CSV is also saved to the parent climatedir:
+        {base_clim_s3}/_dgsa/{dgsa_version}/{clim_selection_label}/{exp_set}/
+            _dgsa-treatment-cases.csv
+
+    Modifications applied to the destination:
+        Dust_temp.in  — dust column × (apprate_base / ref_apprate)
+        q_temp.in     — runoff column × qrun_factor
+        All other files (T_temp.in, Wet_temp.in, clim-timeseries.png) are
+        copied unchanged.
+
+    Parameters
+    ----------
+    df_treat : pd.DataFrame
+        Treatment rows from the DGSA batch dataframe. Must contain columns
+        'region_nospaces', 'apprate_base', 'qrun_factor', and 'paramSet_id'.
+    base_clim_s3 : str
+        Base S3 path for climate dirs (no trailing slash).
+        e.g. "s3://carbonplan-carbon-removal/ew-workflows-data/scepter/clim/one-cell-per-region_1deg"
+    clim_selection_label : str
+        Label for the climate selection (e.g. "repcells1").
+    exp_set : str
+        Experiment set name (e.g. "exe_central1p5").
+    dgsa_version : str
+        Version tag for this DGSA run so repeated runs don't overwrite each
+        other (e.g. "v1.0").
+    ref_apprate : float
+        Application rate of the existing source climate dir. Must match a dir
+        already present at {base_clim_s3}/{clim_selection_label}/{exp_set}/.
+    apprate_suffix : str
+        Suffix appended to the apprate in directory names
+        (e.g. "-tHaYr-appRate-FIXED").
+    runtype : str
+        Climate run type (e.g. "yearly_ltm").
+    deg_resolution : int
+        Spatial resolution label used in region sub-directory names (default 1).
+    dryrun : bool
+        If True, compute paths and print what would be done, but skip all S3
+        reads and writes. Useful for verifying path logic before committing.
+    save_validation_plots : bool
+        If True, generate and save two PNG validation plots to the destination
+        directory alongside the climate files:
+          scaling-validation_dusttemp.png — instantaneous rates, cumulative
+              rock application, and per-year integrals for Dust_temp.in.
+          scaling-validation_qtemp.png   — runoff time series and ratio check
+              for q_temp.in.
+        Ignored when dryrun=True.
+    verbose : bool
+        Print progress for each unique combo processed.
+
+    Returns
+    -------
+    pd.Series
+        Indexed like df_treat; each entry is the full S3 path of the
+        destination climatedir for that row (trailing slash included).
+    """
+    import s3fs
+
+    def _load_tabfile(path):
+        with fsspec.open(path, "r") as fh:
+            raw = fh.read()
+        header = "\n".join(ln for ln in raw.splitlines() if ln.startswith("#"))
+        data = np.loadtxt(io.StringIO(raw), comments="#")
+        return header, data[:, 0], data[:, 1]
+
+    def _format_tabfile(header, times, values):
+        lines = [header] if header else []
+        for t, v in zip(times, values):
+            lines.append(f"{t:18.8e}\t{v:18.8e}")
+        return "\n".join(lines) + "\n"
+
+    def _save_fig_to_s3(fig, dest_path, fs):
+        buf = io.BytesIO()
+        fig.savefig(buf, format="png", dpi=150, bbox_inches="tight")
+        buf.seek(0)
+        with fs.open(dest_path.replace("s3://", ""), "wb") as fh:
+            fh.write(buf.read())
+
+    def _plot_dust_validation(time_yr, dust_src, dust_scaled, ref_apprate, apprate, region):
+        import matplotlib.pyplot as plt
+
+        dt = np.empty_like(time_yr)
+        dt[:-1] = np.diff(time_yr)
+        dt[-1]  = dt[-2]
+        cum_src    = np.cumsum(dust_src    * dt) / 100
+        cum_scaled = np.cumsum(dust_scaled * dt) / 100
+
+        n_years = int(np.floor(time_yr[-1])) + 1
+        yrs, ann_src, ann_scaled = [], [], []
+        for yr in range(n_years):
+            mask = (time_yr >= yr) & (time_yr < yr + 1)
+            if not mask.any():
+                continue
+            yrs.append(yr)
+            ann_src.append(   np.sum(dust_src[mask]    * dt[mask]) / 100)
+            ann_scaled.append(np.sum(dust_scaled[mask] * dt[mask]) / 100)
+        yrs        = np.array(yrs)
+        ann_src    = np.array(ann_src)
+        ann_scaled = np.array(ann_scaled)
+        actual_ratio   = ann_scaled.mean() / ann_src.mean() if ann_src.mean() > 0 else np.nan
+        expected_ratio = apprate / ref_apprate
+        pct_err        = 100 * abs(actual_ratio - expected_ratio) / expected_ratio
+
+        fig, axes = plt.subplots(1, 3, figsize=(16, 4))
+
+        n_plot = min(3, n_years)
+        mask   = time_yr < n_plot
+        ax = axes[0]
+        ax.plot(time_yr[mask], dust_src[mask]    / 100, lw=1,       label=f"source  ({ref_apprate} t/ha/yr)")
+        ax.plot(time_yr[mask], dust_scaled[mask] / 100, lw=1, ls="--", label=f"scaled  ({apprate!r} t/ha/yr)")
+        ax.set_xlabel("Time (yr)")
+        ax.set_ylabel("Rate (t/ha/yr)")
+        ax.set_title(f"Dust_temp.in — rates (first {n_plot} yr)")
+        ax.legend(fontsize=8)
+
+        t_end = time_yr[-1]
+        ax = axes[1]
+        ax.plot(time_yr, cum_src,    lw=1.5,          label="source")
+        ax.plot(time_yr, cum_scaled, lw=1.5, ls="--", label="scaled")
+        ax.plot([0, t_end], [0, ref_apprate * t_end], color="gray",   ls=":", lw=1, label="expected ref slope")
+        ax.plot([0, t_end], [0, apprate     * t_end], color="orange", ls=":", lw=1, label="expected target slope")
+        ax.set_xlabel("Time (yr)")
+        ax.set_ylabel("Cumulative (t/ha)")
+        ax.set_title("Time-integrated rock application")
+        ax.legend(fontsize=8)
+
+        ax = axes[2]
+        ax.plot(yrs, ann_src,    "o", ms=2, label=f"source  (expect {ref_apprate})")
+        ax.plot(yrs, ann_scaled, "s", ms=2, label=f"scaled  (expect {apprate!r})")
+        ax.axhline(ref_apprate, color="tab:blue",   ls="--", lw=0.8)
+        ax.axhline(apprate,     color="tab:orange", ls="--", lw=0.8)
+        ax.set_xlabel("Year")
+        ax.set_ylabel("Annual rock (t/ha)")
+        ax.set_title(
+            f"Per-year integrals\n"
+            f"actual×{actual_ratio:.5f}  expected×{expected_ratio:.5f}  err={pct_err:.3f}%"
+        )
+        ax.legend(fontsize=8)
+
+        fig.suptitle(
+            f"Dust_temp.in scaling — {region}  "
+            f"({ref_apprate} → {apprate!r} t/ha/yr)",
+            y=1.02,
+        )
+        plt.tight_layout()
+        return fig
+
+    def _plot_qtemp_validation(q_time, q_src, q_scaled, qrun_factor, region):
+        import matplotlib.pyplot as plt
+
+        n_plot_yr = min(5, int(q_time[-1]))
+        mask      = q_time < n_plot_yr
+        ratio     = q_scaled / q_src
+
+        fig, axes = plt.subplots(1, 2, figsize=(11, 3.5))
+
+        ax = axes[0]
+        ax.plot(q_time[mask], q_src[mask],    lw=1.5,          label="source  (×1.0)")
+        ax.plot(q_time[mask], q_scaled[mask], lw=1.5, ls="--", label=f"scaled  (×{qrun_factor!r})")
+        ax.set_xlabel("Time (yr)")
+        ax.set_ylabel("Runoff (mm/month)")
+        ax.set_title(f"q_temp.in (first {n_plot_yr} yr)")
+        ax.legend(fontsize=8)
+
+        ax = axes[1]
+        ax.plot(q_time[mask], ratio[mask], lw=1)
+        ax.axhline(qrun_factor, color="red", ls="--", lw=1, label=f"expected {qrun_factor!r}")
+        ax.set_xlabel("Time (yr)")
+        ax.set_ylabel("scaled / source")
+        ax.set_title(f"Ratio check — mean={ratio.mean():.6f}  (expect {qrun_factor!r})")
+        ax.legend(fontsize=8)
+
+        fig.suptitle(
+            f"q_temp.in scaling — {region}  (qrun_factor={qrun_factor!r})",
+            y=1.02,
+        )
+        plt.tight_layout()
+        return fig
+
+    if "paramSet_id" not in df_treat.columns:
+        raise ValueError("df_treat must have a 'paramSet_id' column before calling build_dgsa_climatedirs")
+
+    fs = None if dryrun else s3fs.S3FileSystem(anon=False)
+
+    parent_dir = (
+        f"{base_clim_s3}/_dgsa/{dgsa_version}/{clim_selection_label}/{exp_set}/"
+    )
+    id_to_dest: dict = {}
+
+    for _, row in df_treat.iterrows():
+        param_set_id = row["paramSet_id"]
+        region       = row["region_nospaces"]
+        apprate      = row["apprate_base"]
+        qrun_factor  = row["qrun_factor"]
+        dust_scale   = apprate / ref_apprate
+
+        region_subdir = f"{region}_{deg_resolution}_{runtype}"
+        source_dir = (
+            f"{base_clim_s3}/{clim_selection_label}/{exp_set}/"
+            f"{ref_apprate}{apprate_suffix}/{region_subdir}/"
+        )
+        paramset_dir = f"{parent_dir}paramSet_{param_set_id}/"
+        dest_dir = f"{paramset_dir}{region_subdir}/"
+        id_to_dest[(param_set_id, region)] = paramset_dir
+
+        if verbose:
+            print(
+                f"  paramSet_{param_set_id} ({region}): apprate={apprate!r}, qrun_factor={qrun_factor!r} "
+                f"→ dust×{dust_scale:.4f}"
+            )
+        if dryrun:
+            if verbose:
+                print(f"    [dryrun] dest: {dest_dir}")
+            continue
+
+        # Load + scale Dust_temp.in
+        dust_header, time_yr, dust_src = _load_tabfile(source_dir + "Dust_temp.in")
+        dust_scaled = dust_src * dust_scale
+
+        # Load + scale q_temp.in
+        q_header, q_time, q_src = _load_tabfile(source_dir + "q_temp.in")
+        q_scaled = q_src * qrun_factor
+
+        # Write scaled files
+        for dest_path, header, times, values in [
+            (dest_dir + "Dust_temp.in", dust_header, time_yr, dust_scaled),
+            (dest_dir + "q_temp.in",    q_header,    q_time,  q_scaled),
+        ]:
+            content = _format_tabfile(header, times, values)
+            with fs.open(dest_path.replace("s3://", ""), "w") as fh:
+                fh.write(content)
+            if verbose:
+                print(f"    wrote {dest_path.split('/')[-1]}")
+
+        # Copy unchanged files
+        for fn in ["T_temp.in", "Wet_temp.in", "clim-timeseries.png"]:
+            src_key = (source_dir + fn).replace("s3://", "")
+            dst_key = (dest_dir   + fn).replace("s3://", "")
+            if fs.exists(src_key):
+                fs.copy(src_key, dst_key)
+                if verbose:
+                    print(f"    copied {fn}")
+            elif verbose:
+                print(f"    skipped {fn} (not found at source)")
+
+        # Validation plots
+        if save_validation_plots:
+            import matplotlib
+            matplotlib.use("Agg")
+            import matplotlib.pyplot as plt
+
+            fig_dust = _plot_dust_validation(time_yr, dust_src, dust_scaled, ref_apprate, apprate, region)
+            _save_fig_to_s3(fig_dust, dest_dir + "scaling-validation_dusttemp.png", fs)
+            plt.close(fig_dust)
+
+            fig_q = _plot_qtemp_validation(q_time, q_src, q_scaled, qrun_factor, region)
+            _save_fig_to_s3(fig_q, dest_dir + "scaling-validation_qtemp.png", fs)
+            plt.close(fig_q)
+
+            if verbose:
+                print("    saved scaling-validation_dusttemp.png")
+                print("    saved scaling-validation_qtemp.png")
+
+    # Save treatment cases CSV parallel to the paramSet_* dirs.
+    csv_path = parent_dir + "_dgsa-treatment-cases.csv"
+    df_save = df_treat.copy()
+    df_save["climatedir"] = df_treat.apply(
+        lambda r: id_to_dest[(r["paramSet_id"], r["region_nospaces"])], axis=1
+    )
+    if dryrun:
+        if verbose:
+            print(f"[dryrun] would save treatment cases CSV → {csv_path}")
+    else:
+        csv_bytes = df_save.to_csv(index=False).encode()
+        with fs.open(csv_path.replace("s3://", ""), "wb") as fh:
+            fh.write(csv_bytes)
+        if verbose:
+            print(f"saved treatment cases CSV → {csv_path}")
+
+    if dryrun and verbose:
+        print("build_dgsa_climatedirs: dryrun=True — no files written")
+
+    # Map every row in df_treat back to its destination path.
+    return df_treat.apply(
+        lambda r: id_to_dest[(r["paramSet_id"], r["region_nospaces"])], axis=1
+    )

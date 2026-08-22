@@ -16,6 +16,7 @@ import os
 import re
 import glob
 import fnmatch
+import time
 
 # %% 
 # file_path = "/home/tykukla/SCEPTER/scepter_output/hiFert_gbas__site_311a_app_10000p0_psize_200_gbas_field_tau15p0"
@@ -25,8 +26,33 @@ import fnmatch
 # tx = pd.read_pickle(os.path.join(file_path, subdir, co2_fn))
 # tx
 
-# %% 
+# %%
 # SCEPTER/scepter_output/hiFert_gbas__site_311a_app_10000p0_psize_200_gbas_field_tau15p0/postproc_flxs/co2_flxs.pkl
+
+def _read_pickle_retry(
+    path: str,
+    max_retries: int = 6,
+    base_delay: float = 15.0,
+) -> pd.DataFrame:
+    """
+    pd.read_pickle wrapped with exponential backoff for transient S3
+    errors (e.g. 503 Service Unavailable), which are usually gone within
+    a minute or two. A genuinely missing key (FileNotFoundError) is not
+    retried -- it's raised immediately so callers can treat it as "not found".
+    """
+    for attempt in range(max_retries):
+        try:
+            return pd.read_pickle(path)
+        except FileNotFoundError:
+            raise
+        except OSError as e:
+            if attempt == max_retries - 1:
+                raise
+            delay = base_delay * (2 ** attempt)
+            print(f"  [retry] transient error reading {path} "
+                  f"(attempt {attempt + 1}/{max_retries}): {e}. retrying in {delay:.0f}s...")
+            time.sleep(delay)
+
 
 def read_postproc_flux(
     dfin: pd.DataFrame,  
@@ -167,26 +193,24 @@ def get_timemean_dustrate(
     float
         value for dustrate in ton_ha_yr averaged over run
     '''
-    # --- assume we're not working in s3 (aws) until we check the outdir
-    s3_path = False
-
-    # --- craft the path to the rockdiss file 
+    # --- craft the path to the rockdiss file
     this_fn = f"{fn_pref}_{dustsp}.pkl"
     this_path = os.path.join(outdir, tdf['newrun_id_full'], subdir)
     fn_path = os.path.join(this_path, this_fn)
 
-    # check if it exists
-    # ----------------------------
-    # check for S3
-    if fn_path.startswith("s3://"): # then bring it in from s3
-        import s3fs
-        fs = s3fs.S3FileSystem()
-        s3_path = fs.exists(fn_path)
-    # ----------------------------
-
     # read in the pickle if the path exists
-    if (os.path.exists(fn_path) or s3_path):
-        rockdf = pd.read_pickle(fn_path) # pd can read in aws if fsspec is imported
+    # (for s3 paths, read directly with retry rather than pre-checking
+    # existence with a separate HeadObject call)
+    rockdf = None
+    if fn_path.startswith("s3://"): # then bring it in from s3
+        try:
+            rockdf = _read_pickle_retry(fn_path)
+        except FileNotFoundError:
+            rockdf = None
+    elif os.path.exists(fn_path):
+        rockdf = pd.read_pickle(fn_path)
+
+    if rockdf is not None:
         # compute the time averaged dust (integrated flux divided by time)
         # (note, integrated flux name is 'int_dust_ton_ha_yr' but units should really
         #  be 'ton_ha', which is why we must divide by year)
@@ -246,8 +270,6 @@ def co2_flx_in(dfin: pd.DataFrame,
     pd.DataFrame
         single dataframe with cdr fluxes for the given SCEPTER run
     """
-    # --- assume we're not working in s3 (aws) until we check the outdir
-    s3_path = False
     # --- loop through runs
     # track run index
     rundx = 0
@@ -257,19 +279,22 @@ def co2_flx_in(dfin: pd.DataFrame,
         tdf = dfin.iloc[run]
         this_path = os.path.join(outdir, tdf['newrun_id_full'], subdir)
         fn_path = os.path.join(this_path, co2_fn)
-        
-        # ----------------------------
-        # check for S3
-        if fn_path.startswith("s3://"): # then bring it in from s3
-            import s3fs
-            fs = s3fs.S3FileSystem()
-            s3_path = fs.exists(fn_path)
-        # ----------------------------
 
+        # ----------------------------
         # read in the pickle if the path exists
-        if (os.path.exists(fn_path) or s3_path):
-            tmpdf = pd.read_pickle(fn_path) # pd can read in aws if fsspec is imported
+        # (for s3 paths, read directly rather than pre-checking existence
+        # with a separate HeadObject call -- pd.read_pickle raises
+        # FileNotFoundError for a genuinely missing key)
+        tmpdf = None
+        if fn_path.startswith("s3://"): # then bring it in from s3
+            try:
+                tmpdf = _read_pickle_retry(fn_path)
+            except FileNotFoundError:
+                tmpdf = None
+        elif os.path.exists(fn_path):
+            tmpdf = pd.read_pickle(fn_path)
 
+        if tmpdf is not None:
             # pull out just the time-integrated data and reset row indices
             tmpdf = tmpdf[tmpdf['flx_type'] == flx_type].reset_index(drop=True)
 
@@ -351,9 +376,6 @@ def cation_flx_in(dfin: pd.DataFrame,
     pd.DataFrame
         single dataframe with cdr fluxes for the given SCEPTER run
     """
-    # --- assume we're not using AWS until we check the outdir later
-    s3_path = False
-
     # decide what the cdrpot columns are (depending on the flx_type)
     # (these get summed across all cations at the end)
     # (note, adv_charge doesn't exist yet, but we make it before cdrpot_cols is called)
@@ -380,32 +402,35 @@ def cation_flx_in(dfin: pd.DataFrame,
     for run in range(len(dfin)):
         tdf = dfin.iloc[run]
         this_path = os.path.join(outdir, tdf['newrun_id_full'], subdir)
-        # loop through the different cations to check that they all exist
-        existing_files = []
+        # loop through the different cations and read each one directly
+        # (for s3 paths, read with retry rather than pre-checking existence
+        # with a separate HeadObject call; a missing file is treated as
+        # "not found" and skips the whole run, same as before)
+        cation_dfs = []
+        missing = False
         for cat in cations_to_track:
             fn_thiscat = f"{cation_fn_prefix}{cat}.pkl"
             fn_path = os.path.join(this_path, fn_thiscat)
-            # ----------------------------
-            # check for S3
-            if fn_path.startswith("s3://"): # then bring it in from s3
-                import s3fs
-                fs = s3fs.S3FileSystem()
-                s3_path = fs.exists(fn_path)
-            # ----------------------------
-            if (os.path.exists(fn_path) or s3_path):
-                existing_files.append(fn_path)
-        
-        # if the length of existing_files is != cations_to_track
-        # then we assume some files are missing and we just move on 
-        # to the next run (no results are returned for this one)
-        if len(existing_files) != len(cations_to_track):
+            try:
+                if fn_path.startswith("s3://"): # then bring it in from s3
+                    cation_dfs.append(_read_pickle_retry(fn_path))
+                elif os.path.exists(fn_path):
+                    cation_dfs.append(pd.read_pickle(fn_path))
+                else:
+                    missing = True
+                    break
+            except FileNotFoundError:
+                missing = True
+                break
+
+        # if any cation file is missing, we just move on to the next
+        # run (no results are returned for this one)
+        if missing:
             continue
-        
+
         # otherwise loop through each cation and add them together
         cat_dx = 0   # index of the cation to update in loop
-        for fpath in existing_files:
-            tmpdf = pd.read_pickle(fpath)  # works with aws if fsspec is imported
-
+        for tmpdf in cation_dfs:
             # pull out just the time-integrated data and reset row indices
             tmpdf = tmpdf[tmpdf['flx_type'] == flx_type].reset_index(drop=True).copy()
             # get the cation
@@ -517,9 +542,6 @@ def rockdiss_in(dfin: pd.DataFrame,
     pd.DataFrame
         single dataframe with cdr fluxes for the given SCEPTER run
     """
-    # --- assume we're not using aws until we check the outdir later 
-    s3_path = False
-
     # --- loop through runs
     # track run index
     rundx = 0
@@ -527,7 +549,7 @@ def rockdiss_in(dfin: pd.DataFrame,
     # loop
     for run in range(len(dfin)):
         tdf = dfin.iloc[run]
-        # find feedstock dustsp if not defined 
+        # find feedstock dustsp if not defined
         if feedstock is None:
             if "dustsp" not in dfin.columns:
                 raise ValueError("Feedstock not defined and dustsp is not in `dfin` -- can't tell which feedstock to use! ")
@@ -535,18 +557,21 @@ def rockdiss_in(dfin: pd.DataFrame,
         this_path = os.path.join(outdir, tdf['newrun_id_full'], subdir)
         tmpfn = f'{rock_prefix}{feedstock}.pkl'
         fn_path = os.path.join(this_path, tmpfn)
-        # ----------------------------
-        # check for S3
-        if fn_path.startswith("s3://"): # then bring it in from s3
-            import s3fs
-            fs = s3fs.S3FileSystem()
-            s3_path = fs.exists(fn_path)
-        # ----------------------------
+
         # read in the pickle if the path exists
-        if (os.path.exists(fn_path) or s3_path):
+        # (for s3 paths, read directly with retry rather than pre-checking
+        # existence with a separate HeadObject call)
+        tmpdf = None
+        if fn_path.startswith("s3://"): # then bring it in from s3
+            try:
+                tmpdf = _read_pickle_retry(fn_path)
+            except FileNotFoundError:
+                tmpdf = None
+        elif os.path.exists(fn_path):
             tmpdf = pd.read_pickle(fn_path)
 
-            # add whether or not it's the control run 
+        if tmpdf is not None:
+            # add whether or not it's the control run
             tmpdf["ctrl"] = tdf["ctrl_run"]
 
             # add the runname since we forgot that earlier
@@ -1202,6 +1227,7 @@ def emissions_calculator_df(
     #
     bondwork_indices = {
         "gbas": 18.67,  # Zhang et al., 2023 (see notes above)
+        "gbas2": 18.67, # gbas2 differs from gbas only in cation stoichiometry, not grindability
         "baek23": 18.67,# Zhang et al., 2023 (see notes above)
         "baek23nodp": 18.67,# Zhang et al., 2023 (see notes above)
         "bridge": 18.67,# Zhang et al., 2023 (see notes above)
@@ -1420,6 +1446,7 @@ def emissions_calculator_ds(
     #
     bondwork_indices = {
         "gbas": 18.67,  # Zhang et al., 2023 (see notes above)
+        "gbas2": 18.67, # gbas2 differs from gbas only in cation stoichiometry, not grindability
         "baek23": 18.67,# Zhang et al., 2023 (see notes above)
         "baek23nodp": 18.67,# Zhang et al., 2023 (see notes above)
         "bridge": 18.67,# Zhang et al., 2023 (see notes above)
@@ -3852,6 +3879,282 @@ def gcam_postprocess_all_dims_constApp(
 
     return ds_combined
 
+# --- application -> dissolution -> CDR lag, on a cation-budget basis
+def compute_region_lag_curves(ds_r: xr.Dataset, RCO2: float = 0.3) -> dict:
+    """
+    Build cumulative CDR-equivalent curves for one region, on a cation-budget basis.
+
+    Parameters
+    ----------
+    ds_r : xr.Dataset
+        Single-region slice (already sel'd to one site + apprate_base + roughness_factor +
+        cec_factor) of the output of gcam_postprocess_all_dims_constApp. Must contain
+        'catbudget_adv_region', 'catbudget_sic_region', 'catbudget_gbas_region', and
+        'M_GCAM', plus a 'time' coordinate.
+    RCO2 : float
+        Stoichiometric CDR potential per unit rock mass (tCO2/tRock). Applied to the raw
+        rock-mass curve (M_GCAM) to put it on the same tCO2-equivalent basis as the
+        catbudget-derived curves, which are already RCO2-scaled.
+
+    Returns
+    -------
+    dict
+        Keys: 't' (time grid), 'C' (cumulative realized CDR), 'C_sic' (cumulative realized
+        CDR incl. secondary carbonate formation), 'theta_A' (cumulative CDR-equivalent
+        potential from rock applied), 'theta_D' (cumulative CDR-equivalent potential from
+        rock dissolved).
+
+    Notes
+    -----
+    theta_A uses 'M_GCAM' (the region's annual rock-mass target) rather than summing
+    'M_D' (rock mass per deployment cohort) over the 'deployment' dim. The area solver in
+    gcam_postprocess_region_constApp enforces sum(M_D, dim='deployment') == M_GCAM exactly
+    by construction (mu + M_new == M_GCAM every year, including the area-trimming branch),
+    confirmed empirically to ~1e-16 relative difference. Reading M_GCAM directly skips
+    loading/summing the much larger (time, deployment) M_D array -- ~2x faster per region.
+    """
+    t_r = ds_r['time'].values
+
+    cdr_rate = -ds_r['catbudget_adv_region'].compute().values
+    C = cumulative_trapezoid(cdr_rate, t_r, initial=0.0)
+
+    cdr_sic_rate = -(ds_r['catbudget_adv_region'].compute().values
+                      + ds_r['catbudget_sic_region'].compute().values)
+    C_sic = cumulative_trapezoid(cdr_sic_rate, t_r, initial=0.0)
+
+    rockapp_rate = ds_r['M_GCAM'].compute().values
+    theta_A = cumulative_trapezoid(rockapp_rate, t_r, initial=0.0) * RCO2
+
+    rockdiss_rate = ds_r['catbudget_gbas_region'].compute().values
+    theta_D = cumulative_trapezoid(rockdiss_rate, t_r, initial=0.0)
+
+    return {'t': t_r, 'C': C, 'C_sic': C_sic, 'theta_A': theta_A, 'theta_D': theta_D}
+
+
+def _lag_record_from_curves(curves: dict, percentiles, suffix: str) -> dict:
+    """
+    Percentile-crossing lag metrics (years) from one set of cumulative curves.
+
+    For each percentile of the curve's own final value, finds the year each of C / C_sic /
+    theta_A / theta_D reaches that same absolute level, and differences the crossing years.
+    Shared by compute_lag_table (suffix='region') and compute_global_lag (suffix='global').
+    """
+    t_r, C, C_sic  = curves['t'], curves['C'], curves['C_sic']
+    theta_A, theta_D = curves['theta_A'], curves['theta_D']
+
+    record = {}
+    for pct in percentiles:
+        p_label = f'P{int(pct * 100)}'
+
+        target = pct * C[-1]
+        t_C = np.interp(target, C, t_r)
+        t_A = np.interp(target, theta_A, t_r)
+        t_D = np.interp(target, theta_D, t_r)
+        record[f't_app_cdr_adv_{suffix}_{p_label}'] = t_C - t_A
+        record[f't_diss_cdr_adv_{suffix}_{p_label}'] = t_C - t_D
+        record[f't_app_diss_{suffix}_{p_label}']     = t_D - t_A
+
+        target_sic = pct * C_sic[-1]
+        t_C_sic = np.interp(target_sic, C_sic, t_r)
+        t_A_sic = np.interp(target_sic, theta_A, t_r)
+        t_D_sic = np.interp(target_sic, theta_D, t_r)
+        record[f't_app_cdr_adv+sic_{suffix}_{p_label}']  = t_C_sic - t_A_sic
+        record[f't_diss_cdr_adv+sic_{suffix}_{p_label}'] = t_C_sic - t_D_sic
+
+    return record
+
+
+def compute_lag_table(
+    dsall: xr.Dataset,
+    RCO2: float = 0.3,
+    percentiles: tuple = (0.25, 0.50, 0.75),
+    site_dim: str = 'site',
+    **sel_kwargs,
+) -> Tuple[pd.DataFrame, dict]:
+    """
+    Per-region application -> dissolution -> CDR lag, for one experimental condition.
+
+    Parameters
+    ----------
+    dsall : xr.Dataset
+        Postprocessed SCEPTER/GCAM output (output of gcam_postprocess_all_dims_constApp),
+        with a `site_dim` dimension plus whatever other swept-parameter coords/dims it has
+        (e.g. apprate_base, dustrad or roughness_factor, cec_factor).
+    RCO2 : float
+        Passed through to compute_region_lag_curves.
+    percentiles : sequence of float
+        Percentiles (0-1) of each region's own final cumulative CDR at which to measure lag.
+    site_dim : str
+        Name of the region/site dimension in dsall (default 'site').
+    **sel_kwargs
+        Non-site coordinate values identifying the single experimental condition to select,
+        e.g. apprate_base=15.0, dustrad=0.333, cec_factor=1.0 -- passed straight to
+        `dsall.sel(**sel_kwargs)`. Left generic since the dustrad/roughness_factor coordinate
+        name differs between the raw postprocessed output and downstream analysis notebooks
+        that convert dustrad to roughness_factor for readability.
+
+    Returns
+    -------
+    lag_df : pd.DataFrame
+        One row per region (indexed by `site_dim`), columns named '{metric}_region_{Pxx}'.
+    region_curves : dict[str, dict]
+        Per-region cumulative curves (see compute_region_lag_curves), keyed by region name --
+        reusable by compute_global_lag without re-selecting from dsall.
+    """
+    ds_cond = dsall.sel(**sel_kwargs)
+
+    lag_records = []
+    region_curves = {}
+    for region in ds_cond[site_dim].values:
+        ds_r = ds_cond.sel(**{site_dim: region})
+        curves = compute_region_lag_curves(ds_r, RCO2=RCO2)
+        region_curves[region] = curves
+
+        record = _lag_record_from_curves(curves, percentiles, suffix='region')
+        record[site_dim] = region
+        lag_records.append(record)
+
+    lag_df = pd.DataFrame(lag_records).set_index(site_dim)
+    return lag_df, region_curves
+
+
+def compute_global_lag(region_curves: dict, lag_df: pd.DataFrame,
+                        percentiles: tuple = (0.25, 0.50, 0.75)) -> pd.DataFrame:
+    """
+    Roll per-region lag curves up to a global scale, two ways.
+
+    Parameters
+    ----------
+    region_curves : dict[str, dict]
+        Per-region cumulative curves, as returned by compute_lag_table.
+    lag_df : pd.DataFrame
+        Per-region lag table, as returned by compute_lag_table (same regions/condition as
+        region_curves).
+    percentiles : sequence of float
+        Must match the percentiles used to build lag_df.
+
+    Returns
+    -------
+    pd.DataFrame
+        Indexed by metric name (e.g. 't_app_cdr_adv_global_P50'), with columns:
+        - 'global_curve_summed': regional C/theta_A/theta_D curves summed first, then the
+          percentile-crossing lag applied to the summed curves -- answers "when does the
+          whole global system reach X% of its total CDR?"
+        - 'cdr_weighted_regional_avg': each region's own lag (from lag_df), averaged with
+          weights equal to that region's share of total CDR. Diverges from the curve-summed
+          column when regions ramp up out of phase with each other.
+    """
+    t_g = next(iter(region_curves.values()))['t']  # all regions share the same time grid
+    global_curves = {
+        't':       t_g,
+        'C':       np.sum([rc['C']       for rc in region_curves.values()], axis=0),
+        'C_sic':   np.sum([rc['C_sic']   for rc in region_curves.values()], axis=0),
+        'theta_A': np.sum([rc['theta_A'] for rc in region_curves.values()], axis=0),
+        'theta_D': np.sum([rc['theta_D'] for rc in region_curves.values()], axis=0),
+    }
+    global_lag = _lag_record_from_curves(global_curves, percentiles, suffix='global')
+
+    cdr_weights = pd.Series({region: rc['C'][-1] for region, rc in region_curves.items()})
+    cdr_weights = cdr_weights / cdr_weights.sum()
+    global_lag_weighted_avg = {
+        col: float((lag_df[col] * cdr_weights).sum())
+        for col in lag_df.columns
+    }
+
+    rows = []
+    for pct in percentiles:
+        p_label = f'P{int(pct * 100)}'
+        for kind in ['t_app_cdr_adv', 't_diss_cdr_adv', 't_app_diss',
+                     't_app_cdr_adv+sic', 't_diss_cdr_adv+sic']:
+            g_key = f'{kind}_global_{p_label}'
+            r_key = f'{kind}_region_{p_label}'
+            rows.append({
+                'metric': g_key,
+                'global_curve_summed': global_lag[g_key],
+                'cdr_weighted_regional_avg': global_lag_weighted_avg[r_key],
+            })
+
+    return pd.DataFrame(rows).set_index('metric')
+
+
+def compute_lag_table_all_dims(
+    dsall: xr.Dataset,
+    RCO2: float = 0.3,
+    percentiles: tuple = (0.25, 0.50, 0.75),
+    site_dim: str = 'site',
+    verbose: bool = True,
+) -> Tuple[xr.Dataset, xr.Dataset]:
+    """
+    Run compute_lag_table + compute_global_lag for every combination of dsall's swept
+    dims, and assemble the results into two xr.Datasets that share dsall's swept-dim
+    structure -- so they merge directly onto ds_all / ds_sum (e.g. via `.assign(...)` or
+    `xr.merge([ds_sum, lag_ds, global_lag_ds])`), the same way gcam_postprocess_all_dims_constApp
+    assembles per-region results into one Dataset.
+
+    Parameters
+    ----------
+    dsall : xr.Dataset
+        Postprocessed SCEPTER/GCAM output (output of gcam_postprocess_all_dims_constApp),
+        with a `site_dim` dimension, a 'time' dimension, and one or more swept-parameter
+        dims (e.g. apprate_base/dustrad/cec_factor for a standard sweep, or
+        collapsed_inputs for a DGSA run).
+    RCO2 : float
+        Passed through to compute_lag_table.
+    percentiles : sequence of float
+        Passed through to compute_lag_table / compute_global_lag.
+    site_dim : str
+        Name of the region/site dimension in dsall (default 'site').
+    verbose : bool
+        Print a progress line for each swept-dim combination (default True).
+
+    Returns
+    -------
+    lag_ds : xr.Dataset
+        Per-region lag metrics, dims (site_dim, <swept dims>). One data variable per
+        lag_df column (e.g. 't_app_cdr_adv_region_P50').
+    global_lag_ds : xr.Dataset
+        Global lag metrics, dims ('metric', <swept dims>), where 'metric' indexes the
+        15 lag quantities (e.g. 't_app_cdr_adv_global_P50'). Variables
+        'global_curve_summed' and 'cdr_weighted_regional_avg' are the two ways of
+        rolling regions up to a global number (see compute_global_lag).
+    """
+    import itertools
+
+    loop_dims = [d for d in dsall.dims if d not in (site_dim, 'time', 'deployment')]
+    n_total = 1
+    for d in loop_dims:
+        n_total *= dsall.sizes[d]
+
+    lag_pieces = []
+    global_pieces = []
+    for k, combo in enumerate(itertools.product(*[dsall[d].values for d in loop_dims])):
+        sel_kwargs = dict(zip(loop_dims, combo))
+
+        if verbose:
+            combo_str = ', '.join(f'{d}={v}' for d, v in sel_kwargs.items())
+            print(f'[{k + 1}/{n_total}]  {combo_str}')
+
+        lag_df, region_curves = compute_lag_table(
+            dsall, RCO2=RCO2, percentiles=percentiles, site_dim=site_dim, **sel_kwargs
+        )
+        global_lag_df = compute_global_lag(region_curves, lag_df, percentiles=percentiles)
+
+        lag_piece    = xr.Dataset.from_dataframe(lag_df)
+        global_piece = xr.Dataset.from_dataframe(global_lag_df)
+        for dim, val in sel_kwargs.items():
+            lag_piece    = lag_piece.assign_coords({dim: val})
+            global_piece = global_piece.assign_coords({dim: val})
+        lag_piece    = lag_piece.expand_dims(loop_dims)
+        global_piece = global_piece.expand_dims(loop_dims)
+
+        lag_pieces.append(lag_piece)
+        global_pieces.append(global_piece)
+
+    lag_ds        = xr.combine_by_coords(lag_pieces, combine_attrs='override')
+    global_lag_ds = xr.combine_by_coords(global_pieces, combine_attrs='override')
+
+    return lag_ds, global_lag_ds
+
 # --- cation budget where feedstock is the source and we track all sinks
 def read_cation_budget_flx(
     dfin: pd.DataFrame,
@@ -3868,15 +4171,23 @@ def read_cation_budget_flx(
     For each run in dfin, read raw SCEPTER cation flux txt files and compute
     the CDR-potential budget summed over all cations in cation_list.
 
-    Always includes: dustsp (primary source), adv (CDR), tflx (storage).
-    Conditionally includes other columns (except 'res') if their absolute
+    Always includes: dustsp (primary source), adv (CDR), tflx (storage), and any
+    sic_minerals column present (cc, dlm, arg by default) -- these are named,
+    always-tracked pathways grouped into 'catbudget_sic'. Conditionally includes
+    any other column (except 'res') in 'catbudget_other' if its absolute
     cumulative value at t_end >= threshold_frac * |dustsp cumulative at t_end|.
-    SIC minerals (cc, dlm, arg by default) that pass the threshold are grouped
-    into 'catbudget_sic'; other qualifying columns go into 'catbudget_other'.
 
     Control runs: the dustsp column (e.g. 'gbas') is absent when no rock is
     applied. If detected, a zero column is injected so controls are processed
     consistently with case runs (catbudget_gbas = 0 for controls by construction).
+    Because dustsp is forced to 0, controls have no reference scale for the
+    'other' threshold check -- rather than trivially including every column
+    (0 always clears a zero threshold), 'other' columns are excluded entirely
+    for runs with zero dustsp. SIC minerals are unconditional precisely so this
+    asymmetry can't affect them: both case and control always include the same
+    SIC columns, which is what lets control subtraction cleanly cancel the large
+    shared background (no-rock) SIC/exchange signal instead of leaving it stuck
+    on only one side of the subtraction.
 
     Sign convention — uniform negation of raw SCEPTER file values:
       Positive = source (adds cations to aqueous)
@@ -3884,8 +4195,8 @@ def read_cation_budget_flx(
 
       catbudget_gbas     = -dustsp_rate  (+ : dissolution adds to aqueous)
       catbudget_adv      = -adv_rate     (− : advection removes from column)
-      catbudget_tflx     = -tflx_rate    (+ when accumulating, − when releasing)
-      catbudget_sic      = -sic_rate     (+ when forming, − when dissolving)
+      catbudget_tflx     = -tflx_rate    (+ when releasing (adds to aqueous), − when accumulating (removes from aqueous))
+      catbudget_sic      = -sic_rate     (+ when dissolving (adds to aqueous), − when forming (removes from aqueous))
       catbudget_other    = -other_rate   (sign tracks aqueous gain/loss)
       catbudget_residual = sum of all above  (≈ 0 if mass balance is closed)
 
@@ -3988,6 +4299,20 @@ def read_cation_budget_flx(
             # cumulative (rate_avg × time) at each timestep for threshold check
             cum = {c: df[c].values * _t for c in df.columns if c != tc}
             gbas_final = abs(cum[dustsp][-1]) if dustsp in cum else 1.0
+            # control runs apply no rock, so dustsp should carry no real signal --
+            # but the raw file's own 'gbas' column isn't always an exact 0.0 (it can
+            # sit at floating-point noise, e.g. ~1e-22, rather than being injected
+            # fresh), so gbas_final ends up as a tiny nonzero number rather than
+            # exactly 0. "abs(x) >= threshold_frac * gbas_final" is then still
+            # trivially true for virtually any column, pulling extra species into
+            # catbudget_other for controls that a matched case run (with a real,
+            # meaningful gbas_final) would exclude. That asymmetry corrupts
+            # catbudget_other/residual after control subtraction (case_other −
+            # ctrl_other mixes different column sets). Gate on is_ctrl directly
+            # instead of gbas_final's magnitude -- with no rock applied there's no
+            # reference scale to judge relative significance, so default to
+            # excluding "other" columns rather than trivially including all of them.
+            has_ref_scale = (not is_ctrl) and (gbas_final > 0)
 
             for col in df.columns:
                 if col == tc or col == 'res':
@@ -4000,10 +4325,17 @@ def read_cation_budget_flx(
                 elif col == 'tflx':
                     tflx_rate  += vals
                 elif col in sic_minerals:
-                    if col in cum and abs(cum[col][-1]) >= threshold_frac * gbas_final:
-                        sic_rate += vals
+                    # SIC formation/dissolution is a named, always-tracked pathway
+                    # (like adv/tflx above), not a "maybe relevant" one -- included
+                    # unconditionally so case and control treat it identically
+                    # regardless of gbas_final. This matters because SIC has a large
+                    # shared background (no-rock) signal in both case and control;
+                    # unconditional inclusion on both sides is what lets control
+                    # subtraction cancel that background rather than leaving it
+                    # asymmetrically in just one side.
+                    sic_rate += vals
                 else:
-                    if col in cum and abs(cum[col][-1]) >= threshold_frac * gbas_final:
+                    if has_ref_scale and col in cum and abs(cum[col][-1]) >= threshold_frac * gbas_final:
                         other_rate += vals
                         other_cols_used.add(col)
 
@@ -4016,8 +4348,8 @@ def read_cation_budget_flx(
         # Negating gives the intuitive sign: sources positive, sinks negative.
         cdp_gbas  = -gbas_rate   # + : dissolution source
         cdp_adv   = -adv_rate    # − : advection removes cations from column
-        cdp_tflx  = -tflx_rate   # + when exchange fills (captures), − when releases
-        cdp_sic   = -sic_rate    # + when SIC forms (captures), − when dissolves
+        cdp_tflx  = -tflx_rate   # + when exchange releases, − when fills (captures)
+        cdp_sic   = -sic_rate    # + when SIC dissolves, − when forms (captures)
         cdp_other = -other_rate  # sign follows aqueous gain/loss
 
         # residual = sum of all included terms; ≈ 0 if mass balance is closed
