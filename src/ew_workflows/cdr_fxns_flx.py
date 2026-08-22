@@ -629,6 +629,7 @@ def emissions_calculator(
     #
     bondwork_indices = {
         "gbas": 18.67,  # Zhang et al., 2023 (see notes above)
+        "gbas2": 18.67, # gbas2 differs from gbas only in cation stoichiometry, not grindability
         "cc": 12.10,    # mean of limestone estimates in Kanda and Kotake (2007) and Bond, 1961
         "wls": 8.33     # see Marco and Caterina, 2022 (https://www.proquest.com/docview/2781737786?pq-origsite=gscholar&fromopenview=true&sourcetype=Conference%20Papers%20&%20Proceedings)
     }
@@ -757,6 +758,7 @@ def emissions_calculator_df( df : pd.DataFrame, dustrate_name: str,
     #
     bondwork_indices = {
         "gbas": 18.67,  # Zhang et al., 2023 (see notes above)
+        "gbas2": 18.67, # gbas2 differs from gbas only in cation stoichiometry, not grindability
         "cc": 12.10,    # mean of limestone estimates in Kanda and Kotake (2007) and Bond, 1961
         "wls": 8.33     # see Marco and Caterina, 2022 (https://www.proquest.com/docview/2781737786?pq-origsite=gscholar&fromopenview=true&sourcetype=Conference%20Papers%20&%20Proceedings)
     }

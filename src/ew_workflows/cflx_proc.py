@@ -120,7 +120,76 @@ molar_mass_dict = {
     # fe2: 0.19 * 71.846        = 13.65074
     #
     # SUM --------------------> = 124.3332
-}   
+    # ---------------------------------------------------------------------------------
+    # --- repeat same approach for gbas2
+    'gbas2': 120.4969,
+    # gbas2 is a synthetic low-CDR-potential glass basalt (RCO2 = 0.30 tCO2/t rock,
+    # vs 0.4096 for gbas). It is NOT read from basalt_defines.h -- its composition is
+    # hardcoded in scepter_richards.f90 (lines ~156-172), derived from the gbas
+    # composition by scaling the base cations (Ca, Mg, Na, K) by 0.73250297 and adding
+    # Si to make up the lost oxide mass, so that mwtgbas2 == mwtgbas exactly. Holding
+    # molar mass fixed also holds particle density fixed at 3.0 g/cm3 (mv = mwt/3.0),
+    # so surface area per gram and the per-m2 rate law are identical to gbas and the
+    # only thing that differs is base-cation equivalents per mole (x0.73250297).
+    #
+    # --- molar mass is calculated following line ~404 in scepter_richards.f90
+    # mwtgbas2 = (fr_si_gbas2*mwtamsi + fr_al_gbas2/2d0*mwtal2o3 + fr_na_gbas2/2d0*mwtna2o
+    #            + fr_k_gbas2/2d0*mwtk2o + fr_ca_gbas2*mwtcao + fr_mg_gbas2*mwtmgo + fr_fe2_gbas2*mwtfe2o )
+    #
+    # Uses the weight fractions defined in scepter_richards.f90 lines ~166-172
+    # fr_si_gbas2 = 1.122644371d0 ! Si fraction of gbas2 (gbas + Si added to hold mwt)
+    # fr_al_gbas2 = 0.4683117231d0 ! Al fraction of gbas2 (unchanged from gbas)
+    # fr_na_gbas2 = 0.059248893d0 ! Na fraction of gbas2 (gbas x 0.73250297)
+    # fr_k_gbas2 = 0.006175833283d0 ! K fraction of gbas2 (gbas x 0.73250297)
+    # fr_mg_gbas2 = 0.1993643748d0 ! Mg fraction of gbas2 (gbas x 0.73250297)
+    # fr_ca_gbas2 = 0.1786241861d0 ! Ca fraction of gbas2 (gbas x 0.73250297)
+    # fr_fe2_gbas2 = 0.1251095225d0 ! Fe2 fraction of gbas2 (unchanged from gbas)
+    #
+    # si: 1.122644371 * 60.085         = 67.454100
+    # al: 0.4683117231/2 * 101.962     = 23.875005
+    # na: 0.059248893/2 * 61.979       = 1.836088
+    # k: 0.006175833283/2 * 94.195     = 0.290866
+    # ca: 0.1786241861 * 56.079        = 10.017147
+    # mg: 0.1993643748 * 40.304        = 8.035183
+    # fe2: 0.1251095225 * 71.846       = 8.988622
+    #
+    # SUM --------------------> = 120.4969  (== gbas, by construction)
+}
+
+
+# %%
+# --- CDR potential (RCO2) by feedstock
+# [t CO2 / t rock] the maximum CO2 uptake per unit mass of feedstock, set by its
+# base cation content. This is not a SCEPTER input -- it is emergent from the
+# mineral stoichiometry, computed here as:
+#
+#   RCO2 = (2*fr_ca + 2*fr_mg + fr_na + fr_k) * mwtCO2 / molar_mass_dict[feedstock]
+#
+# where the fr_* are the cation fractions in scepter_richards.f90 and mwtCO2 =
+# 44.009 g/mol. One mole of cation charge is one mole of charge balanced by HCO3-,
+# hence one mole of CO2. Values below are for the feedstocks whose composition is
+# fully specified in the Fortran; add an entry when you add a feedstock.
+#
+# Intended use: deriving an RCO2 correction factor programmatically from the
+# feedstock name rather than hardcoding it, e.g.
+#   rco2_correction_factor = RCO2_GCAM / scepter_rco2[dustsp]
+#
+# NOTE: gbas depends on data/basalt_defines.h (live because the makefile sets
+# -Dmod_basalt_cmp). If you swap that header, recompute this entry. gbas2 does
+# not -- its composition is hardcoded, so its RCO2 is fixed at 0.30 by design.
+scepter_rco2 = {  # [t CO2 / t rock]
+    'gbas': 0.409555,   # from basalt_defines.h; charge = 1.121363 mol/mol, mwt = 120.4969
+    'gbas2': 0.300000,  # synthetic low-CDR basalt; charge = 0.821402 mol/mol, mwt = 120.4969
+    'cbas': 0.442096,   # from hardcoded fr_*_cbas; charge = 1.249 mol/mol, mwt = 124.3332
+    'fo': 1.251198,     # forsterite, Mg2SiO4; charge = 4 mol/mol, mwt = 140.694
+}
+# Deliberately NOT included:
+#   'cc' (calcite) -- for carbonates the net CO2 captured per mole depends on the
+#     accounting convention (CaCO3 + CO2 + H2O -> Ca2+ + 2HCO3- captures 1 mol CO2
+#     per mol, but half of that is re-released on downstream carbonate precipitation).
+#     The charge-balance formula above is only unambiguous for silicates.
+#   'wls' (wollastonite) -- has no entry in molar_mass_dict above, so there is no
+#     verified molar mass to derive it from here.
 
 
 # %%
