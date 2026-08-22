@@ -7,6 +7,7 @@
 #
 # ----------------------------------------------------
 # %%
+import json
 import math
 import os
 from pathlib import Path
@@ -2193,12 +2194,219 @@ def dustflx_calc_v102(       # [ updated for v1.0.2 ]
 #     these are used to move/copy files to or from an aws bucket
 
 
+# --- names of the bookkeeping files written alongside an uploaded run
+UPLOAD_MANIFEST_FN = "_upload_manifest.json"
+UPLOAD_INCOMPLETE_FN = "upload_incomplete.res"
+
+
+def _local_file_manifest(src: str) -> dict:
+    """
+    Map every file under `src` to its size in bytes, keyed by the path
+    relative to `src`.
+
+    This snapshot has to be taken *before* the upload starts: `s5cmd mv`
+    deletes local files as it goes, so after the fact there is nothing left
+    to compare against.
+
+    Parameters
+    ----------
+    src : str
+        local run directory
+
+    Returns
+    -------
+    dict
+        {relative path: size in bytes}
+    """
+    manifest = {}
+    for dirpath, dirnames, filenames in os.walk(src):
+        for fn in filenames:
+            fpath = os.path.join(dirpath, fn)
+            try:
+                manifest[os.path.relpath(fpath, src)] = os.path.getsize(fpath)
+            except OSError:   # file vanished between the walk and the stat
+                continue
+    return manifest
+
+
+def _s3_file_manifest(fs, s3_dir: str) -> dict:
+    """
+    Map every object under `s3_dir` to its size in bytes, keyed by the path
+    relative to `s3_dir`. Mirrors the output of `_local_file_manifest` so the
+    two can be compared directly.
+
+    Parameters
+    ----------
+    fs : s3fs.S3FileSystem
+        filesystem used to list the bucket
+    s3_dir : str
+        's3://bucket/prefix/runname'
+
+    Returns
+    -------
+    dict
+        {relative path: size in bytes}
+    """
+    prefix = s3_dir.replace("s3://", "").rstrip("/")
+    # we just wrote here, so don't trust a cached listing. Narrow rather than
+    # global: find() issues a fresh listing regardless (it calls _lsdir with
+    # delimiter=""), so this is belt-and-braces without clearing everything.
+    fs.invalidate_cache(prefix)
+    manifest = {}
+    for objpath, info in fs.find(prefix, detail=True).items():
+        rel = objpath[len(prefix):].lstrip("/")
+        if rel:
+            manifest[rel] = info.get("size")
+    return manifest
+
+
+def _write_json_to_s3(fs, s3_path: str, data: dict):
+    """Write `data` as json to `s3_path`."""
+    with fs.open(s3_path, "w") as f:
+        json.dump(data, f)
+
+
+def verify_upload(
+    src: str,
+    s3_dir: str,
+    local_manifest: dict,
+    fs = None,
+    max_retries: int = 3,
+    remove_local: bool = False,
+) -> list:
+    """
+    Confirm that every file in `local_manifest` reached `s3_dir` at the right
+    size, re-uploading any that did not.
+
+    s5cmd can silently drop objects when a large concurrent batch throttles the
+    bucket. With aws_save='move' the local copy is deleted as the transfer
+    proceeds, so a drop that goes unnoticed here is unrecoverable -- which is
+    why the manifest is captured up front and checked before anything local is
+    cleaned up.
+
+    Parameters
+    ----------
+    src : str
+        local run directory that was uploaded
+    s3_dir : str
+        's3://bucket/prefix/runname' that `src` was uploaded to
+    local_manifest : dict
+        {relative path: size in bytes} snapshot taken before the upload
+    fs : s3fs.S3FileSystem
+        filesystem to list with (one is created if not supplied)
+    max_retries : int
+        number of re-upload passes to attempt before giving up
+    remove_local : bool
+        if True, delete the local files once every one is confirmed on aws.
+        This restores the 'move' semantics for any file s5cmd left behind.
+
+    Returns
+    -------
+    list
+        relative paths still missing or size-mismatched after all retries
+        (empty when the upload is verified complete)
+    """
+    if fs is None:
+        fs = s3fs.S3FileSystem()
+
+    missing = []
+    for attempt in range(max_retries + 1):
+        remote_manifest = _s3_file_manifest(fs, s3_dir)
+        missing = sorted(
+            rel for rel, size in local_manifest.items()
+            if remote_manifest.get(rel) != size
+        )
+        if not missing or attempt == max_retries:
+            break
+
+        print(f"[to_aws] verify pass {attempt + 1}/{max_retries}: {len(missing)} of "
+              f"{len(local_manifest)} file(s) missing or size-mismatched in {s3_dir}")
+        for rel in missing:
+            local_fpath = os.path.join(src, rel)
+            if not os.path.isfile(local_fpath):
+                # s5cmd already removed the local copy -- nothing left to resend
+                continue
+            # list form rather than shell=True: scepter output filenames contain
+            # characters the shell would mangle (e.g. 'ph(ac).txt', 'psd_ct(v%)-010.txt')
+            subprocess.run(
+                ["s5cmd", "cp", local_fpath, f"{s3_dir.rstrip('/')}/{rel}"],
+                check=False,
+            )
+
+    if not missing and remove_local:
+        # everything is confirmed on aws, so the leftovers are safe to clear
+        for dirpath, dirnames, filenames in os.walk(src):
+            for fn in filenames:
+                try:
+                    os.remove(os.path.join(dirpath, fn))
+                except OSError:
+                    pass
+
+    return missing
+
+
+def _verify_upload_or_raise(
+    src: str,
+    s3_dir: str,
+    local_manifest: dict,
+    max_retries: int = 3,
+    remove_local: bool = False,
+    write_manifest: bool = True,
+):
+    """
+    Run `verify_upload` and act on the result: on success write the manifest
+    that `checkrow_for_rerun` validates against, on failure leave an
+    `upload_incomplete.res` breadcrumb on aws and raise.
+
+    The breadcrumb matters because completed.res / check_results.res are
+    written locally *before* the upload, so a partially uploaded run otherwise
+    looks complete to every downstream check.
+    """
+    fs = s3fs.S3FileSystem()
+    missing = verify_upload(
+        src = src,
+        s3_dir = s3_dir,
+        local_manifest = local_manifest,
+        fs = fs,
+        max_retries = max_retries,
+        remove_local = remove_local,
+    )
+
+    incomplete_path = f"{s3_dir.rstrip('/')}/{UPLOAD_INCOMPLETE_FN}"
+    if missing:
+        try:
+            _write_json_to_s3(fs, incomplete_path, {
+                "n_expected": len(local_manifest),
+                "n_missing": len(missing),
+                "missing": missing,
+            })
+        except Exception as e:
+            print(f"[to_aws] could not write {UPLOAD_INCOMPLETE_FN} to {s3_dir}: {e}")
+        raise RuntimeError(
+            f"to_aws could not verify {len(missing)} of {len(local_manifest)} file(s) in "
+            f"{s3_dir} after {max_retries} retries. First few: {missing[:10]}"
+        )
+
+    # ... a previous attempt may have left a breadcrumb; this upload is clean
+    try:
+        if fs.exists(incomplete_path):
+            fs.rm(incomplete_path)
+    except Exception as e:
+        print(f"[to_aws] could not clear a stale {UPLOAD_INCOMPLETE_FN} in {s3_dir}: {e}")
+
+    if write_manifest:
+        _write_json_to_s3(fs, f"{s3_dir.rstrip('/')}/{UPLOAD_MANIFEST_FN}", local_manifest)
+
+
 def to_aws(
     aws_save: str,
     aws_bucket: str,
     outdir: str,
     runname_lab: str | list[str],
     runname_field: str | list[str],
+    verify: bool = True,
+    verify_retries: int = 3,
+    write_manifest: bool = True,
 ):
     """
     Copy or move files in runname_lab and runname_field
@@ -2225,6 +2433,15 @@ def to_aws(
         name of the field run, also the name of the run directory which stores
         the field results. If it's a string, then it gets converted to a one-element
         list of strings in the function and we loop through that list. 
+    verify : bool
+        if True, confirm that every local file reached the bucket (re-uploading
+        any that did not) before the local copy is cleaned up, and raise if any
+        file cannot be recovered. Only applies when aws_save is 'move' or 'copy'.
+    verify_retries : int
+        number of re-upload passes `verify_upload` attempts before giving up
+    write_manifest : bool
+        if True, write `_upload_manifest.json` into the uploaded run directory.
+        `checkrow_for_rerun` uses it to confirm a run's output is complete.
 
     Returns
     -------
@@ -2271,10 +2488,22 @@ def to_aws(
                 # --- TROUBLESHOOT ----
                 # print(f"Trying to move {src} to {dst_aws}")
                 # ---------------------
+                # ... snapshot the local tree first -- s5cmd mv deletes as it goes
+                local_manifest = _local_file_manifest(src) if verify else {}
                 cmd_run = "s5cmd mv " + src + " " + dst_aws.rstrip("/") + "/"
                 # result1 = subprocess.run(cmd_activate, shell=True, check=True)
                 result2 = subprocess.run(cmd_run, shell=True, check=True)
                 outdir_final = dst_aws
+                # ... confirm it all landed before we lose the local copy
+                if verify:
+                    _verify_upload_or_raise(
+                        src = src,
+                        s3_dir = os.path.join(dst_aws.rstrip("/"), runname),
+                        local_manifest = local_manifest,
+                        max_retries = verify_retries,
+                        remove_local = True,
+                        write_manifest = write_manifest,
+                    )
                 # ... remove empty sub directories
                 for dirpath, dirnames, filenames in os.walk(src, topdown=False):
                     for dirname in dirnames:
@@ -2290,10 +2519,20 @@ def to_aws(
                 # --- TROUBLESHOOT ----
                 # print(f"Trying to copy {src} to {dst_aws}")
                 # ---------------------
+                local_manifest = _local_file_manifest(src) if verify else {}
                 cmd_run = "s5cmd cp " + src + " " + dst_aws + "/"
                 # result1 = subprocess.run(cmd_activate, shell=True, check=True)
                 result2 = subprocess.run(cmd_run, shell=True, check=True)
                 outdir_final = dst_aws
+                if verify:
+                    _verify_upload_or_raise(
+                        src = src,
+                        s3_dir = os.path.join(dst_aws.rstrip("/"), runname),
+                        local_manifest = local_manifest,
+                        max_retries = verify_retries,
+                        remove_local = False,
+                        write_manifest = write_manifest,
+                    )
             else:
                 outdir_final = outdir
         

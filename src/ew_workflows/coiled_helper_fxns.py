@@ -1,6 +1,7 @@
 # --- helper functions for coiled workflows ---
 import os
 import json
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from pathlib import PurePosixPath
 import re
@@ -364,6 +365,186 @@ def check_logs_read(
 
 
 
+# --- bookkeeping files to_aws writes alongside an uploaded run
+#     (see shf.to_aws / shf.verify_upload in scepter_helperFxns.py)
+UPLOAD_MANIFEST_FN = "_upload_manifest.json"
+UPLOAD_INCOMPLETE_FN = "upload_incomplete.res"
+
+# cations sumCat_adv saves a per-species file for (its catvars_charge default)
+DEFAULT_CATION_SPECIES = ["ca", "mg", "k", "na"]
+
+
+def _s3_relative_listing(fs, s3_dir: str) -> dict:
+    """
+    Map every object under `s3_dir` to its size in bytes, keyed by the path
+    relative to `s3_dir`.
+    """
+    prefix = s3_dir.replace("s3://", "").rstrip("/")
+    # narrow, not global: s3fs's find() issues a fresh listing either way (it
+    # calls _lsdir with delimiter=""), and clearing the whole dircache would
+    # have concurrent workers evicting each other's entries for no benefit
+    fs.invalidate_cache(prefix)
+    listing = {}
+    for objpath, info in fs.find(prefix, detail=True).items():
+        rel = objpath[len(prefix):].lstrip("/")
+        if rel:
+            listing[rel] = info.get("size")
+    return listing
+
+
+def default_postproc_prof_names() -> list:
+    """
+    Names of the .nc files `prof_postproc_save` writes when postproc_prof_list
+    is ['all'] -- read straight off cflx_proc so the two cannot drift apart.
+    Returns an empty list (i.e. no expectation, so no check) if cflx_proc
+    can't be imported.
+    """
+    try:
+        from ew_workflows.cflx_proc import postproc_prof_dict
+        return list(postproc_prof_dict.keys())
+    except Exception as e:
+        print(f"[rerun-check] could not import cflx_proc.postproc_prof_dict "
+              f"({e}); skipping the postproc_profs check")
+        return []
+
+
+def expected_postproc_files(row: pd.Series, pars: dict = None) -> dict:
+    """
+    Build the postprocessing output a completed run should have, keyed by the
+    subdirectory it lives in.
+
+    Used only as a fallback for runs uploaded before to_aws began writing
+    `_upload_manifest.json`; when a manifest exists it is authoritative.
+
+    The feedstock component files (`rockflx_<fs>_<component>.pkl`) can't be
+    named from the batch csv alone -- `sld_flx` takes the component list from
+    the run's dust.in at runtime. So they are expressed as a prefix rule ("at
+    least one file starting with rockflx_<fs>_") which never yields a false
+    positive but, for a genuinely multi-species feedstock, only catches the
+    loss of every component rather than some of them.
+
+    Parameters
+    ----------
+    row : pd.Series
+        a single row of the batch csv (needs 'dustsp', optionally 'dustsp_2nd')
+    pars : dict
+        parameter dict. 'expected-postproc-flxs' and 'expected-postproc-profs'
+        override the derived file lists; set either to [] to skip that check.
+
+    Returns
+    -------
+    dict
+        {subdirectory: {"files": [names], "prefixes": [prefixes]}}
+    """
+    pars = pars or {}
+
+    # --- flux pickles (cflx_proc.cflx_calc)
+    flx_files = ["co2_flxs.pkl", "carbAlk_flxs.pkl", "cationflx_sum.pkl"]
+    flx_files += [f"cationflx_{cat}.pkl" for cat in DEFAULT_CATION_SPECIES]
+
+    feedstocks = []
+    for col in ("dustsp", "dustsp_2nd"):
+        if col in row.index:
+            val = row[col]
+            if pd.notna(val) and str(val).strip() not in ("", "None") and val not in feedstocks:
+                feedstocks.append(val)
+    flx_files += [f"rockflx_{fs}.pkl" for fs in feedstocks]
+    flx_prefixes = [f"rockflx_{fs}_" for fs in feedstocks]
+
+    # --- profile netcdfs (cflx_proc.prof_postproc_save)
+    prof_list = pars.get("postproc-prof-list", ["all"])
+    if prof_list in ("all", ["all"]):
+        prof_names = default_postproc_prof_names()
+    else:
+        prof_names = list(prof_list)
+    prof_files = [f"{pp}.nc" for pp in prof_names]
+
+    # --- allow the params dict to override either list outright
+    if "expected-postproc-flxs" in pars:
+        flx_files = list(pars["expected-postproc-flxs"])
+        flx_prefixes = []
+    if "expected-postproc-profs" in pars:
+        prof_files = list(pars["expected-postproc-profs"])
+
+    return {
+        "postproc_flxs": {"files": sorted(set(flx_files)), "prefixes": flx_prefixes},
+        "postproc_profs": {"files": sorted(set(prof_files)), "prefixes": []},
+    }
+
+
+def check_postproc_outputs(fs, awsdir: str, row: pd.Series, pars: dict = None) -> tuple:
+    """
+    Confirm that a run's postprocessing output actually reached the bucket.
+
+    completed.res, check_results.res and check_logs.res are all written
+    *locally* by run_complete_check before to_aws uploads anything, so they say
+    nothing about what survived the transfer -- a run that silently lost files
+    to s5cmd still looks complete to every other check here. This closes that
+    gap, checking in order of preference:
+
+      1. `upload_incomplete.res`  -- to_aws already flagged the upload as short
+      2. `_upload_manifest.json`  -- every file to_aws sent must still be there
+      3. an expected postproc file list derived from the row, for runs uploaded
+         before to_aws started writing manifests
+
+    Parameters
+    ----------
+    fs : s3fs.S3FileSystem
+        filesystem to inspect the bucket with
+    awsdir : str
+        's3://bucket/prefix/runname' holding the run output
+    row : pd.Series
+        the run's row from the batch csv
+    pars : dict
+        parameter dict (see `expected_postproc_files` for the keys it reads)
+
+    Returns
+    -------
+    tuple(bool, list)
+        (True if the run needs rerunning, list of human-readable reasons)
+    """
+    pars = pars or {}
+
+    # [1] --- to_aws could not verify its own upload
+    if fs.exists(os.path.join(awsdir, UPLOAD_INCOMPLETE_FN)):
+        return True, [f"{UPLOAD_INCOMPLETE_FN} present: to_aws could not verify the upload"]
+
+    # [2] --- a manifest is authoritative, so prefer it over any derived list
+    manifest_path = os.path.join(awsdir, UPLOAD_MANIFEST_FN)
+    if fs.exists(manifest_path):
+        try:
+            with fs.open(manifest_path, "r") as f:
+                manifest = json.load(f)
+        except Exception as e:
+            return True, [f"could not read {UPLOAD_MANIFEST_FN}: {e}"]
+        present = _s3_relative_listing(fs, awsdir)
+        missing = sorted(rel for rel, size in manifest.items() if present.get(rel) != size)
+        if missing:
+            return True, [f"{len(missing)} of {len(manifest)} manifest file(s) missing "
+                          f"or size-mismatched (e.g. {missing[:5]})"]
+        return False, []
+
+    # [3] --- no manifest, so fall back to the expected postproc files
+    reasons = []
+    for subdir, expected in expected_postproc_files(row, pars).items():
+        if not expected["files"] and not expected["prefixes"]:
+            continue
+        try:
+            present = {objpath.split("/")[-1]
+                       for objpath in fs.ls(os.path.join(awsdir, subdir))}
+        except FileNotFoundError:
+            reasons.append(f"{subdir}/ is missing")
+            continue
+        missing = sorted(fn for fn in expected["files"] if fn not in present)
+        if missing:
+            reasons.append(f"{subdir}/ missing {missing}")
+        for prefix in expected["prefixes"]:
+            if not any(fn.startswith(prefix) for fn in present):
+                reasons.append(f"{subdir}/ has no {prefix}*.pkl file")
+
+    return bool(reasons), reasons
+
+
 def checkrow_for_rerun(
     row: pd.Series,
     pars: dict,
@@ -373,6 +554,8 @@ def checkrow_for_rerun(
     check_logs_fn: str = "check_logs.res",
     stale_threshold_minutes: float = 15,
     skip_duration_check: bool = False,
+    check_postproc: bool = True,
+    pars_for_postproc: dict = None,
 ) -> bool:
     '''
     Check the results for a given row in the batch dataFrame to see
@@ -386,6 +569,10 @@ def checkrow_for_rerun(
         2. One of the checks in the check_results.res file failed (e.g., is False)
         3. The model duration exceeds the allowable threshold difference from the target duration 
            (based on the check_logs.res file)
+        4. The postprocessing output didn't survive the upload to aws (see
+           `check_postproc_outputs`). Checks 1-3 all read files that are written
+           locally *before* to_aws runs, so on their own they can't catch a run
+           whose output was only partly transferred.
     
     Parameters
     ----------
@@ -408,6 +595,11 @@ def checkrow_for_rerun(
         we deem the run stale
     skip_duration_check : bool
         True if we want to skip the duration check (used for multi year simulations)
+    check_postproc : bool
+        True to also confirm the postprocessing output reached the bucket
+        (aws results only; see `check_postproc_outputs`)
+    pars_for_postproc : dict
+        parameter dict passed through to `check_postproc_outputs`; defaults to `pars`
     
     Returns
     -------
@@ -462,6 +654,20 @@ def checkrow_for_rerun(
 
             else:
                 rerun_case = True
+
+            # check that the postprocessing output survived the trip to aws
+            # (the three .res files above are all written locally before to_aws
+            #  runs, so they can't speak to what actually landed in the bucket)
+            if check_postproc:
+                postproc_rerun, postproc_reasons = check_postproc_outputs(
+                    fs = fs,
+                    awsdir = awsdir,
+                    row = row,
+                    pars = pars_for_postproc if pars_for_postproc is not None else pars,
+                )
+                if postproc_rerun:
+                    rerun_case = True
+                    print(f"[rerun] {row['newrun_id_field_full']}: " + "; ".join(postproc_reasons))
 
             # check all the checks if we haven't found a reason to rerun yet
             if not rerun_case: 
@@ -538,6 +744,8 @@ def allrows_rerun_check(
     duration_threshold_frac: str = 0.2,
     stale_threshold_minutes: float = 15,
     skip_duration_check: bool=False,
+    check_postproc: bool=True,
+    max_workers: int = 16,
 ) -> pd.DataFrame:
     '''
     Check all rows in the batch dataframe for whether we need to rerun 
@@ -565,6 +773,13 @@ def allrows_rerun_check(
         we deem the run stale
     skip_duration_check : bool
         True if we skip the model duration check (used for multi_year simulations)
+    check_postproc : bool
+        True to also confirm each run's postprocessing output reached the bucket
+    max_workers : int
+        number of threads used to check rows concurrently. Each row is an
+        independent set of s3 lookups, so this is almost pure latency hiding
+        (a 3500-row batch drops from ~37 min to ~4 min). Set to 1 to check
+        rows serially.
     
     Returns
     -------
@@ -572,13 +787,12 @@ def allrows_rerun_check(
         Returns the input dataframe with updated columns for rerun_needed and 
         rerun_n 
     '''
-    # --- loop through all rows
-    rerun_me = []
-    delay_me = []  # the "completed.res" file doesn't exist, so we delay until delay_max
-    delete_me = []  # local dirs to delete so we don't overwrite them when we re-run them 
-    for index, row in df_batch.iterrows():
-
-        rerun_result, delay_result, delete_result = checkrow_for_rerun(
+    # --- check every row
+    # each row is an independent batch of s3 lookups, so they are checked
+    # concurrently; `executor.map` yields results in input order, which is what
+    # keeps the three lists below aligned with the rows of df_batch
+    def _check_one(row):
+        return checkrow_for_rerun(
             row = row,
             pars = pars,
             duration_threshold_frac = duration_threshold_frac,
@@ -587,11 +801,19 @@ def allrows_rerun_check(
             check_logs_fn = check_logs_fn,
             stale_threshold_minutes = stale_threshold_minutes,
             skip_duration_check = skip_duration_check,
+            check_postproc = check_postproc,
         )
 
-        rerun_me.append(rerun_result)
-        delay_me.append(delay_result)
-        delete_me.append(delete_result)
+    rows = [row for _, row in df_batch.iterrows()]
+    if max_workers and max_workers > 1 and len(rows) > 1:
+        with ThreadPoolExecutor(max_workers = min(max_workers, len(rows))) as ex:
+            results = list(ex.map(_check_one, rows))
+    else:
+        results = [_check_one(row) for row in rows]
+
+    rerun_me = [res[0] for res in results]
+    delay_me = [res[1] for res in results]   # "completed.res" absent, so delay until delay_max
+    delete_me = [res[2] for res in results]  # local dirs to delete so a rerun doesn't overwrite them
 
     # add result to df
     df_batch = df_batch.assign(rerun_needed = rerun_me)
@@ -681,7 +903,9 @@ def find_failed_or_stale_runs(
         check_logs_fn  = check_logs_fn,
         duration_threshold_frac = duration_threshold_frac,
         stale_threshold_minutes = 0,
-        skip_duration_check = skip_duration_check
+        skip_duration_check = skip_duration_check,
+        check_postproc = pars.get("check-postproc-outputs", True),
+        max_workers = pars.get("rerun-check-workers", 16),
     )
 
     return df_batch_rerunCheck
