@@ -4247,6 +4247,7 @@ def read_cation_budget_flx(
     sic_minerals: list = None,
     verbose: bool = False,
     pkl_fallback: bool = True,
+    return_skipped: bool = False,
 ) -> tuple:
     """
     For each run in dfin, read raw SCEPTER cation flux txt files and compute
@@ -4312,6 +4313,11 @@ def read_cation_budget_flx(
         Column names treated as secondary inorganic carbonate minerals.
     verbose : bool
         If True, print which 'other' columns are included per run.
+    return_skipped : bool
+        If True, also return a DataFrame of the runs that were skipped and why.
+        The same table is always attached to ``df_int.attrs['skipped_runs']``,
+        so it is available even when this is left False (note pandas drops
+        ``.attrs`` through most operations, so prefer this flag).
 
     Returns
     -------
@@ -4319,6 +4325,12 @@ def read_cation_budget_flx(
         Time-integrated (cumulative) budget in t CO₂-equiv ha⁻¹.
     df_transient : pd.DataFrame
         Instantaneous rate budget in t CO₂-equiv ha⁻¹ yr⁻¹.
+    df_skipped : pd.DataFrame
+        Only when ``return_skipped=True``. One row per skipped run, with
+        'run_index' (position in dfin), 'runname', 'missing_cations',
+        'n_missing', 'reason', plus every column in dfin_cols_to_keep so the
+        run can be matched back to its batch row for a rerun. Empty (with the
+        same columns) when nothing was skipped.
     """
     if cation_list is None:
         cation_list = ['ca', 'mg', 'na', 'k']
@@ -4331,6 +4343,7 @@ def read_cation_budget_flx(
 
     int_dfs   = []
     trans_dfs = []
+    skipped   = []
 
     for run in range(len(dfin)):
         tdf     = dfin.iloc[run]
@@ -4362,6 +4375,29 @@ def read_cation_budget_flx(
 
         if not dfs_flx:
             print(f"  [run {run}] no cation files found in {flx_dir}, skipping")
+            skipped.append({
+                'run_index': run, 'runname': runname,
+                'missing_cations': ','.join(cation_list), 'n_missing': len(cation_list),
+                'reason': 'no cation files found',
+                **{col: tdf[col] for col in dfin_cols_to_keep},
+            })
+            continue
+
+        # every cation in cation_list has to be present. The budget sums over
+        # cations, so a partial set doesn't fail -- it silently understates the
+        # result. Losing 'ca' alone costs ~40% of catbudget_gbas and zeroes
+        # catbudget_sic, which is indistinguishable from a real result
+        # downstream. Skip the run instead and report it.
+        missing_cats = [cat for cat in cation_list if cat not in dfs_flx]
+        if missing_cats:
+            print(f"  [run {run}] incomplete cation set, missing {missing_cats} "
+                  f"-- skipping run")
+            skipped.append({
+                'run_index': run, 'runname': runname,
+                'missing_cations': ','.join(missing_cats), 'n_missing': len(missing_cats),
+                'reason': 'incomplete cation set',
+                **{col: tdf[col] for col in dfin_cols_to_keep},
+            })
             continue
 
         # --- control runs: dustsp column absent (no rock applied) -----------
@@ -4489,11 +4525,28 @@ def read_cation_budget_flx(
             run_tr[col] = tdf[col]
         trans_dfs.append(run_tr)
 
+    # --- skipped-run report (built even when empty, so the schema is stable)
+    skipped_cols = (['run_index', 'runname', 'missing_cations', 'n_missing', 'reason']
+                    + list(dfin_cols_to_keep))
+    df_skipped = (pd.DataFrame(skipped)[skipped_cols] if skipped
+                  else pd.DataFrame(columns=skipped_cols))
+    if skipped:
+        print(f"  [summary] skipped {len(df_skipped)} of {len(dfin)} run(s); "
+              f"see the returned skipped-run report (return_skipped=True)")
+
     if not int_dfs:
+        if return_skipped:
+            empty = pd.DataFrame()
+            empty.attrs['skipped_runs'] = df_skipped
+            return empty, pd.DataFrame(), df_skipped
         raise ValueError("No output produced — check paths and cation file locations.")
 
     df_int       = pd.concat(int_dfs,   ignore_index=True)
     df_transient = pd.concat(trans_dfs, ignore_index=True)
+    df_int.attrs['skipped_runs'] = df_skipped
+    df_transient.attrs['skipped_runs'] = df_skipped
+    if return_skipped:
+        return df_int, df_transient, df_skipped
     return df_int, df_transient
 
 
