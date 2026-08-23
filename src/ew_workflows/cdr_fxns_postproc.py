@@ -4156,6 +4156,86 @@ def compute_lag_table_all_dims(
     return lag_ds, global_lag_ds
 
 # --- cation budget where feedstock is the source and we track all sinks
+# Columns `cflx_proc.build_cation_df` adds on top of the raw flx_aq-<cation>.txt
+# schema. These MUST be stripped before the budget sees the frame: 'charge' is a
+# constant (1 or 2) whose cumulative over a multi-decade run trivially clears
+# threshold_frac * gbas_final, and the *_source columns are sums of columns that
+# are already counted. Leaving any of them in silently inflates catbudget_other
+# by roughly the size of the whole signal.
+_CATION_PKL_DERIVED_COLS = (
+    'noncarbsld_source', 'carbsld_source',
+    'co2pot_adv_tonHaYr', 'co2pot_tot_tonHaYr',
+    'co2pot_adv_tonHa', 'co2pot_tot_tonHa',
+    'charge', 'units', 'flx_type', 'runname', 'cation',
+)
+
+
+def cation_flx_from_pickle(
+    outdir: str,
+    runname: str,
+    cation: str,
+    flx_type: str = 'int_flx',
+    subdir: str = 'postproc_flxs',
+) -> pd.DataFrame:
+    """
+    Rebuild the raw ``flx_aq-<cation>.txt`` schema from the postprocessing
+    pickle ``<subdir>/cationflx_<cation>.pkl``.
+
+    Used as a fallback when the raw txt file didn't survive the upload to aws.
+    The pickle is written by `cflx_proc.build_cation_df` from that very txt
+    file and applies no numerical transform to the cation fluxes, so it is a
+    faithful stand-in. (The `sumCat_adv` docstring's "int_* fluxes are
+    multiplied by time" note describes `co2_flx`/`sld_flx`, not this path.)
+    Two differences have to be undone here:
+
+      1. the pickle concatenates the transient ('flx') and time-integrated
+         ('int_flx') blocks, so one has to be selected
+      2. it carries extra derived and metadata columns that the raw file has
+         no equivalent for -- see `_CATION_PKL_DERIVED_COLS`
+
+    `build_cation_df` also drops columns whose values are all below 1e-7. That
+    cannot change the budget: such a column's cumulative over an 80 year run is
+    at most ~8e-6, four-plus orders below a threshold_frac * gbas_final of order
+    0.02-2, so it can never flip the "other" threshold. The one unconditionally
+    counted column that can go missing this way is the feedstock column in
+    control runs, which `read_cation_budget_flx` re-injects as zero anyway.
+
+    Parameters
+    ----------
+    outdir : str
+        location of the output dirs, as passed to `read_cation_budget_flx`
+    runname : str
+        name of the run output directory
+    cation : str
+        cation short name, e.g. 'ca'
+    flx_type : str
+        which block to return: 'int_flx' (the int_flx_aq-*.txt equivalent) or 'flx'
+    subdir : str
+        subdirectory of the run directory holding the pickle
+
+    Returns
+    -------
+    pd.DataFrame or None
+        a frame matching the raw txt schema, or None if the pickle is absent
+        or holds nothing for `flx_type`
+    """
+    fn_path = os.path.join(outdir, runname, subdir, f'cationflx_{cation}.pkl')
+    try:
+        df = _read_pickle_retry(fn_path)
+    except Exception:
+        return None
+    if df is None:
+        return None
+
+    if 'flx_type' in df.columns:
+        df = df[df['flx_type'] == flx_type]
+    if df.empty:
+        return None
+
+    keep = [col for col in df.columns if col not in _CATION_PKL_DERIVED_COLS]
+    return df[keep].reset_index(drop=True)
+
+
 def read_cation_budget_flx(
     dfin: pd.DataFrame,
     outdir: str,
@@ -4166,6 +4246,7 @@ def read_cation_budget_flx(
     threshold_frac: float = 0.02,
     sic_minerals: list = None,
     verbose: bool = False,
+    pkl_fallback: bool = True,
 ) -> tuple:
     """
     For each run in dfin, read raw SCEPTER cation flux txt files and compute
@@ -4220,6 +4301,11 @@ def read_cation_budget_flx(
         Subdirectory within each run folder holding flux txt files.
     flx_fn_prefix : str
         Filename prefix: '{flx_fn_prefix}{cat}.txt' → e.g. 'int_flx_aq-ca.txt'.
+    pkl_fallback : bool
+        If True, when a raw cation txt file can't be read, fall back to
+        rebuilding it from postproc_flxs/cationflx_<cat>.pkl (see
+        `cation_flx_from_pickle`). Recoveries are always printed, so a run
+        sourced from the pickle is visible in the output rather than silent.
     threshold_frac : float
         Column is included only if |cum[-1]| >= threshold_frac * |gbas_cum[-1]|.
     sic_minerals : list, optional
@@ -4254,13 +4340,25 @@ def read_cation_budget_flx(
         flx_dir = os.path.join(outdir, runname, flx_subdir)
 
         # --- load cation txt files ------------------------------------------
+        # the raw txt is the primary source; a run that lost it in transfer to
+        # aws can still be recovered from its postprocessing pickle, which was
+        # built from the same file before the upload
+        pkl_flx_type = 'int_flx' if flx_fn_prefix.startswith('int_') else 'flx'
         dfs_flx = {}
         for cat in cation_list:
             fn_path = os.path.join(flx_dir, f'{flx_fn_prefix}{cat}.txt')
             try:
                 dfs_flx[cat] = pd.read_csv(fn_path, sep=r'\s+', engine='python')
             except Exception as e:
-                print(f"  [run {run}] missing {cat}: {e}")
+                df_pkl = cation_flx_from_pickle(
+                    outdir, runname, cat, flx_type=pkl_flx_type,
+                ) if pkl_fallback else None
+                if df_pkl is not None:
+                    dfs_flx[cat] = df_pkl
+                    print(f"  [run {run}] {cat}: raw txt missing, recovered from "
+                          f"cationflx_{cat}.pkl")
+                else:
+                    print(f"  [run {run}] missing {cat}: {e}")
 
         if not dfs_flx:
             print(f"  [run {run}] no cation files found in {flx_dir}, skipping")
