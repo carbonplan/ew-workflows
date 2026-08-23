@@ -2273,6 +2273,7 @@ def verify_upload(
     fs = None,
     max_retries: int = 3,
     remove_local: bool = False,
+    repair_file_limit: int = 100,
 ) -> list:
     """
     Confirm that every file in `local_manifest` reached `s3_dir` at the right
@@ -2299,6 +2300,11 @@ def verify_upload(
     remove_local : bool
         if True, delete the local files once every one is confirmed on aws.
         This restores the 'move' semantics for any file s5cmd left behind.
+    repair_file_limit : int
+        if more than this many files are missing, don't attempt a per-file
+        repair. That many drops means the transfer failed wholesale rather
+        than losing a few objects, and re-sending them one at a time would
+        take far longer than simply rerunning.
 
     Returns
     -------
@@ -2317,6 +2323,11 @@ def verify_upload(
             if remote_manifest.get(rel) != size
         )
         if not missing or attempt == max_retries:
+            break
+        if len(missing) > repair_file_limit:
+            print(f"[to_aws] {len(missing)} of {len(local_manifest)} file(s) missing in "
+                  f"{s3_dir}, over repair_file_limit ({repair_file_limit}) -- the transfer "
+                  f"failed wholesale, so this run is left for a rerun rather than repaired")
             break
 
         print(f"[to_aws] verify pass {attempt + 1}/{max_retries}: {len(missing)} of "
@@ -2437,6 +2448,9 @@ def to_aws(
         if True, confirm that every local file reached the bucket (re-uploading
         any that did not) before the local copy is cleaned up, and raise if any
         file cannot be recovered. Only applies when aws_save is 'move' or 'copy'.
+        Note this also changes aws_save='move' into a copy-verify-then-delete,
+        so that a file s5cmd fails to send is still on disk to be retried, and
+        a non-zero s5cmd exit no longer aborts before the repair runs.
     verify_retries : int
         number of re-upload passes `verify_upload` attempts before giving up
     write_manifest : bool
@@ -2488,14 +2502,25 @@ def to_aws(
                 # --- TROUBLESHOOT ----
                 # print(f"Trying to move {src} to {dst_aws}")
                 # ---------------------
-                # ... snapshot the local tree first -- s5cmd mv deletes as it goes
+                # ... snapshot the local tree before anything is sent
                 local_manifest = _local_file_manifest(src) if verify else {}
-                cmd_run = "s5cmd mv " + src + " " + dst_aws.rstrip("/") + "/"
+                # when verifying, copy rather than move: `mv` deletes each file as
+                # it is sent, so anything s5cmd drops after deleting is gone for
+                # good. `verify_upload` clears the local copies itself, but only
+                # once every file is confirmed on aws.
+                s5cmd_verb = "cp" if verify else "mv"
+                cmd_run = f"s5cmd {s5cmd_verb} " + src + " " + dst_aws.rstrip("/") + "/"
                 # result1 = subprocess.run(cmd_activate, shell=True, check=True)
-                result2 = subprocess.run(cmd_run, shell=True, check=True)
+                # s5cmd exits non-zero if ANY object failed. When verifying, repairing
+                # those is precisely the next step, so don't abort the run here -- the
+                # verification raises later if it can't put things right.
+                result2 = subprocess.run(cmd_run, shell=True, check=not verify)
                 outdir_final = dst_aws
-                # ... confirm it all landed before we lose the local copy
+                # ... confirm it all landed before we delete the local copy
                 if verify:
+                    if result2.returncode != 0:
+                        print(f"[to_aws] s5cmd {s5cmd_verb} exited {result2.returncode} for "
+                              f"{src}; verifying and repairing")
                     _verify_upload_or_raise(
                         src = src,
                         s3_dir = os.path.join(dst_aws.rstrip("/"), runname),
@@ -2522,9 +2547,13 @@ def to_aws(
                 local_manifest = _local_file_manifest(src) if verify else {}
                 cmd_run = "s5cmd cp " + src + " " + dst_aws + "/"
                 # result1 = subprocess.run(cmd_activate, shell=True, check=True)
-                result2 = subprocess.run(cmd_run, shell=True, check=True)
+                # non-zero just means some object failed; let the verification repair it
+                result2 = subprocess.run(cmd_run, shell=True, check=not verify)
                 outdir_final = dst_aws
                 if verify:
+                    if result2.returncode != 0:
+                        print(f"[to_aws] s5cmd cp exited {result2.returncode} for "
+                              f"{src}; verifying and repairing")
                     _verify_upload_or_raise(
                         src = src,
                         s3_dir = os.path.join(dst_aws.rstrip("/"), runname),
