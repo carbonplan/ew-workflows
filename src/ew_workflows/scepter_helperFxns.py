@@ -787,10 +787,16 @@ def check_scepter_exec(
         print(f"{scepter_exec_name} already exists and is executable in {rundir}.")
 
 
-def check_for_dust_file_and_zero_out_if_needed(path, dust1_dict):
+# Control runs scale their copied Dust_temp.in by this factor instead of zeroing it.
+# Zeroing can force the OM mixing to change relative to the amended case (at least in scepter_richards.f90), so we avoid it.
+CTRL_DUST_SCALE = 1e-12
+
+
+def check_for_dust_file_and_scale_down_if_control(path, dust1_dict, ctrl_dust_scale=CTRL_DUST_SCALE):
     """
-    If Dust_temp.in exists and dust1_dict[added_sp] == 0,
-    set the second column values to zero.
+    If Dust_temp.in exists and dust1_dict[added_sp] == 0, scale the second column
+    by `ctrl_dust_scale` (see CTRL_DUST_SCALE -- not zeroed, so the control takes the
+    same mixing-scheme code path as its matched case runs).
     """
     # check file existence (local or S3)
     if path.startswith("s3://"):
@@ -823,11 +829,12 @@ def check_for_dust_file_and_zero_out_if_needed(path, dust1_dict):
                 header = f.readline().rstrip("\n")
                 df = pd.read_csv(f, sep=r"\s+", header=None)
 
-        # ---- Zero out second column ----
+        # ---- Scale down second column ----
         if df.shape[1] < 2:
             raise ValueError("Dust_temp.in does not have at least two columns.")
 
-        df.iloc[:, 1] = 0.0
+        df.iloc[:, 1] = df.iloc[:, 1] * ctrl_dust_scale
+        print(f"control run: scaled {os.path.basename(path)} dust column by {ctrl_dust_scale:g}")
 
         # ---- Write file back ----
         if path.startswith("s3://"):
@@ -910,10 +917,11 @@ def create_dust_input(
 
     # ---------------------
     # check that we need to go ahead and make the file 
-    # (stop if it already exists, or change it to zero flux if it exists but this is a control run)
+    # (stop if it already exists, or scale it down to a negligible flux if it exists but
+    # this is a control run)
     # ---------------------
     path = os.path.join(outdir, runname, output_filename)
-    continue_check = check_for_dust_file_and_zero_out_if_needed(path, dust1_dict)
+    continue_check = check_for_dust_file_and_scale_down_if_control(path, dust1_dict)
     if continue_check != "continue":
         return f"{output_filename} already exists"
 

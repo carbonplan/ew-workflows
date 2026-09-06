@@ -4315,9 +4315,9 @@ def read_cation_budget_flx(
         If True, print which 'other' columns are included per run.
     return_skipped : bool
         If True, also return a DataFrame of the runs that were skipped and why.
-        The same table is always attached to ``df_int.attrs['skipped_runs']``,
-        so it is available even when this is left False (note pandas drops
-        ``.attrs`` through most operations, so prefer this flag).
+        This is the only way to get that table -- it is deliberately not
+        attached to ``.attrs``, which rides along through slicing/copy and
+        breaks the downstream concat in catbudget_cdr.
 
     Returns
     -------
@@ -4536,15 +4536,11 @@ def read_cation_budget_flx(
 
     if not int_dfs:
         if return_skipped:
-            empty = pd.DataFrame()
-            empty.attrs['skipped_runs'] = df_skipped
-            return empty, pd.DataFrame(), df_skipped
+            return pd.DataFrame(), pd.DataFrame(), df_skipped
         raise ValueError("No output produced — check paths and cation file locations.")
 
     df_int       = pd.concat(int_dfs,   ignore_index=True)
     df_transient = pd.concat(trans_dfs, ignore_index=True)
-    df_int.attrs['skipped_runs'] = df_skipped
-    df_transient.attrs['skipped_runs'] = df_skipped
     if return_skipped:
         return df_int, df_transient, df_skipped
     return df_int, df_transient
